@@ -38,11 +38,9 @@ export OLLAMA_CONTEXT_LENGTH=32768
 
 # Or create an alias of your model
 ollama show hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q6_K --modelfile > modelfile_qwen3
-
 nano modelfile_qwen3
 # To change the default context size add this line at the end:
 PARAMETER num_ctx 32768
-
 # Then create a new model with the larger context size. This does not duplicate the model files itself.
 ollama create Qwen3-65k -f modelfile_qwen3
 # Set this model name in config.yaml to use it in the app.
