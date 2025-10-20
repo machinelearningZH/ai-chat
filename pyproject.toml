@@ -1,0 +1,13 @@
+[project]
+name = "ai-chat"
+version = "0.1.0"
+description = "A locally operated AI chat with document processing, based on Ollama, Chainlit and Docling."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "chainlit>=2.8.3",
+    "docling>=2.55.1",
+    "openai>=2.3.0",
+    "pyyaml>=6.0",
+    "tiktoken>=0.12.0",
+]
