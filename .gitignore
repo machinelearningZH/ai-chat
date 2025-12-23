@@ -209,6 +209,5 @@ __marimo__/
 # App specific
 .DS_Store
 .files/
-*.code-workspace
 chainlit_logs.log
 .chainlit/translations/*
