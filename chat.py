@@ -85,7 +85,9 @@ async def process_attachments(elements):
 
                 # Check token limit before adding document to attached_docs
                 token_count += len(enc.encode(result))
-                if token_count >= cl.user_session.get("max_tokens", config["default_ollama_max_tokens"]):
+                if token_count >= cl.user_session.get(
+                    "max_tokens", config["default_ollama_max_tokens"]
+                ):
                     token_limit_message = cl.Message(
                         content=DOCUMENT_LIMIT_WARNING.format(element_name=element.name)
                     )
@@ -155,9 +157,7 @@ async def on_chat_start():
     set_session_model_settings(DEFAULT_MODEL)
 
     elements = [
-        cl.Text(
-            name=config["chat"]["app_name"], content=WELCOME, display="inline"
-        )
+        cl.Text(name=config["chat"]["app_name"], content=WELCOME, display="inline")
     ]
 
     await cl.Message(
@@ -216,7 +216,9 @@ async def on_message(message: cl.Message):
     # Trim past content if exceeding max tokens
     max_tokens = cl.user_session.get("max_tokens", config["default_ollama_max_tokens"])
     current_tokens = sum(len(enc.encode(msg["content"])) for msg in past_content)
-    logger.debug(f"Current tokens in past content: {current_tokens}, Max tokens allowed: {max_tokens}")
+    logger.debug(
+        f"Current tokens in past content: {current_tokens}, Max tokens allowed: {max_tokens}"
+    )
     if current_tokens > max_tokens:
         logger.info(
             "Past content exceeded max tokens. Trimming oldest messages to fit within context window."
@@ -231,8 +233,6 @@ async def on_message(message: cl.Message):
             current_tokens -= len(enc.encode(past_content[1]["content"]))
             del past_content[1]
 
-
-
     msg = cl.Message(content="")
     await msg.send()
 
@@ -241,7 +241,9 @@ async def on_message(message: cl.Message):
         messages=past_content,  # type: ignore[arg-type]
         stream=True,
         model=cl.user_session.get("selected_model", DEFAULT_MODEL),
-        max_tokens=cl.user_session.get("max_tokens_output", config["default_max_tokens_output"]),
+        max_tokens=cl.user_session.get(
+            "max_tokens_output", config["default_max_tokens_output"]
+        ),
         temperature=cl.user_session.get("temperature", config["default_temperature"]),
     )
 
