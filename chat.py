@@ -1,6 +1,6 @@
-import os
 from pathlib import Path
 from collections import Counter
+import os
 import chainlit as cl
 from chainlit.input_widget import Select
 from openai import AsyncOpenAI
@@ -28,8 +28,8 @@ config = load_config()
 # See also this issue: https://github.com/openai/tiktoken/issues/317
 os.environ["TIKTOKEN_CACHE_DIR"] = "./_tiktoken_cache"
 enc = tiktoken.get_encoding("cl100k_base")
-print(f"Loaded tiktoken encoding: {enc.name}")
-print(f"{enc.encode('Hello, world!')}")
+logger.debug(f"Loaded tiktoken encoding: {enc.name}")
+logger.debug(f"Tiktoken test: {enc.encode('Hello, world!')}")
 
 
 # Build model configuration dictionary
@@ -66,9 +66,11 @@ async def process_attachments(elements):
         if hasattr(element, "path") and element.path:
             file_path = Path(element.path)
 
-            # Validate that file_path is within .files/ folder
+            # Validate that file_path is within .files/ folder (anchored to project root)
+            project_root = Path(__file__).parent.resolve()
+            allowed_dir = project_root / ".files"
             try:
-                file_path.resolve().relative_to(Path(".files").resolve())
+                file_path.resolve().relative_to(allowed_dir)
             except ValueError:
                 logger.warning(f"File {file_path} is not in .files/ folder. Skipping.")
                 continue
@@ -84,8 +86,9 @@ async def process_attachments(elements):
                 # Check token limit before adding document to attached_docs
                 token_count += len(enc.encode(result))
                 if token_count >= cl.user_session.get("max_tokens", config["default_ollama_max_tokens"]):
-                    token_limit_message = cl.Message(content="")
-                    token_limit_message.content = DOCUMENT_LIMIT_WARNING.format(element_name=element.name)
+                    token_limit_message = cl.Message(
+                        content=DOCUMENT_LIMIT_WARNING.format(element_name=element.name)
+                    )
                     await token_limit_message.send()
                     continue
 
@@ -101,7 +104,7 @@ async def process_attachments(elements):
 
             # Clean up the temporary file that Chainlit created.
             try:
-                os.remove(element.path)
+                Path(element.path).unlink()
             except OSError as e:
                 logger.error(f"Error removing file {element.path}: {str(e)}")
 
@@ -110,7 +113,7 @@ async def process_attachments(elements):
     return attached_docs
 
 
-def set_session_model_settings(selected_model: str) -> dict:
+def set_session_model_settings(selected_model: str) -> None:
     """Set user session token and word limits for the selected model."""
     model_config = MODELS_CONFIG.get(selected_model, MODELS_CONFIG[DEFAULT_MODEL])
     # Subtract buffer from max tokens to leave room for response
@@ -213,7 +216,7 @@ async def on_message(message: cl.Message):
     # Trim past content if exceeding max tokens
     max_tokens = cl.user_session.get("max_tokens", config["default_ollama_max_tokens"])
     current_tokens = sum(len(enc.encode(msg["content"])) for msg in past_content)
-    print(f"Current tokens in past content: {current_tokens}, Max tokens allowed: {max_tokens}")
+    logger.debug(f"Current tokens in past content: {current_tokens}, Max tokens allowed: {max_tokens}")
     if current_tokens > max_tokens:
         logger.info(
             "Past content exceeded max tokens. Trimming oldest messages to fit within context window."
@@ -253,9 +256,12 @@ async def on_message(message: cl.Message):
 
 
 @cl.on_chat_end
-def end():
+async def end() -> None:
     """Log detailed analytics when chat session ends."""
     analytics = cl.user_session.get("analytics")
+    if analytics is None:
+        logger.warning("Analytics not available at chat end")
+        return
 
     # Calculate user message statistics
     user_msg_count = analytics["user_message_count"]
