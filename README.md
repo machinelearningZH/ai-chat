@@ -33,8 +33,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 ollama pull hf.co/unsloth/Qwen3.5-0.8B-GGUF:q6_k
 ollama pull hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:q6_k
 
-> [!NOTE]
-> Currently [no Qwen3.5 GGUF from Unsloth works in Ollama due to separate mmproj vision files](https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b). Instead you need to pull the Qwen-3.5 models from the Ollama library.
+# Currently [no Qwen3.5 GGUF from Unsloth works in Ollama due to separate mmproj vision files](https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b). Instead you need to pull the Qwen-3.5 models from the Ollama library.
 
 ollama pull ollama pull qwen3.5:0.8b
 ollama pull ollama pull qwen3.5:35b
