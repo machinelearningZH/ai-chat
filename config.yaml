@@ -1,22 +1,17 @@
 # LLM Model Configuration
 model:
-  default_selection: "llama3.2:1B"
+  default_selection: "hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:Q6_K"
   models:
-    # https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune/qwen3-2507
-    - name: "llama3.2:1B"
-      temperature: 0.7
-      max_tokens_context: 3000 # see README how to increase context length
-      max_tokens_output: 1024
-    # https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune/qwen3-2507
-    - name: "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q6_K"
-      temperature: 0.7
-      max_tokens_context: 65536 # see README how to increase context length
-      max_tokens_output: 16192
-    # https://docs.unsloth.ai/models/qwen3-coder-how-to-run-locally
-    - name: "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:q6_k"
-      temperature: 0.7
-      max_tokens_context: 256000 # see README how to increase context length
-      max_tokens_output: 16192
+    # https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b
+    - name: "hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:Q6_K"
+      temperature: 1.0
+      max_tokens_context: 200000 
+      max_tokens_output: 32000
+    # https://unsloth.ai/docs/models/qwen3.5#qwen3.5-small-0.8b-2b-4b-9b
+    - name: "hf.co/unsloth/Qwen3.5-0.8B-GGUF:Q6_K"
+      temperature: 1.0
+      max_tokens_context: 16000
+      max_tokens_output: 20248
 
 # OpenAI API Configuration for Ollama
 openai:
@@ -50,6 +45,7 @@ file_format_whitelist:
   - ".md"
   - ".Rmd"
   - ".rmd"
+  - ".RMD"
   - ".r"
   - ".R"
-  - ".bin"
+
