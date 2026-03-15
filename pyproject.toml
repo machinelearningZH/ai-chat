@@ -5,9 +5,9 @@ description = "A locally operated AI chat with document processing, based on Oll
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "chainlit>=2.9.6",
-    "docling>=2.70.0",
-    "openai>=2.16.0",
+    "chainlit>=2.10.0",
+    "docling>=2.80.0",
+    "openai>=2.28.0",
     "pymupdf>=1.27.2",
     "pyyaml>=6.0.3",
     "tiktoken>=0.12.0",
