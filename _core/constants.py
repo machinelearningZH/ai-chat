@@ -44,7 +44,9 @@ Das Dokument konnte nicht verarbeitet werden.
 """
 
 
-DOCUMENT_LIMIT_WARNING = """⚠️ Die Dokumente enthalten zu viel Text. Ich lasse {element_name} weg."""
+DOCUMENT_LIMIT_WARNING = (
+    """⚠️ Die Dokumente enthalten zu viel Text. Ich lasse {element_name} weg."""
+)
 
 
 DOCUMENT_SUCCESS = """Ich habe die Dokumente importiert. Ich bearbeite deine Anfrage."""

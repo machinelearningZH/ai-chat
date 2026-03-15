@@ -45,6 +45,7 @@ context_token_buffer: 2048
 # File format whitelist for document uploads
 file_format_whitelist:
   - ".txt"
+  - ".csv"
   - ".py"
   - ".md"
   - ".Rmd"

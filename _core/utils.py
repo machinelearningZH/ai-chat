@@ -10,19 +10,9 @@ ANALYTICS_LEVEL = 25  # Between INFO (20) and WARNING (30)
 logging.addLevelName(ANALYTICS_LEVEL, "ANALYTICS")
 
 
-def analytics(self, message, *args, **kwargs):
-    """Custom logging method for analytics events."""
-    if self.isEnabledFor(ANALYTICS_LEVEL):
-        self._log(ANALYTICS_LEVEL, message, args, **kwargs)
-
-
-# Add the analytics method to the Logger class
-logging.Logger.analytics = analytics
-
-
 def load_config():
     """Load configuration from config.yaml file.
-    
+
     Uses a singleton pattern to cache the configuration and avoid
     repeated file reads during the application lifecycle.
     """
@@ -38,7 +28,7 @@ def get_custom_logger(name="chainlit_logger", log_file=None):
     if log_file is None:
         config = load_config()
         log_file = config["logging"]["log_file"]
-    
+
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
 
@@ -46,7 +36,9 @@ def get_custom_logger(name="chainlit_logger", log_file=None):
     if not logger.handlers:
         # Create a file handler
         file_handler = logging.FileHandler(log_file, mode="a")
-        file_handler.setLevel(logging.INFO)  # Will capture INFO and above, including ANALYTICS (25)
+        file_handler.setLevel(
+            logging.INFO
+        )  # Will capture INFO and above, including ANALYTICS (25)
 
         # Create and set a formatter
         formatter = logging.Formatter(

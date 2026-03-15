@@ -1,12 +1,13 @@
+import os
 from pathlib import Path
 from collections import Counter
-import os
+import asyncio
 import chainlit as cl
-from chainlit.input_widget import Select
+from chainlit.input_widget import Select, Switch
 from openai import AsyncOpenAI
-from docling.document_converter import DocumentConverter
 import tiktoken
-from _core.utils import get_custom_logger, load_config
+import fitz
+from _core.utils import get_custom_logger, load_config, ANALYTICS_LEVEL
 from _core.constants import (
     WELCOME,
     SYSTEM_PROMPT,
@@ -28,8 +29,6 @@ config = load_config()
 # See also this issue: https://github.com/openai/tiktoken/issues/317
 os.environ["TIKTOKEN_CACHE_DIR"] = "./_tiktoken_cache"
 enc = tiktoken.get_encoding("cl100k_base")
-logger.debug(f"Loaded tiktoken encoding: {enc.name}")
-logger.debug(f"Tiktoken test: {enc.encode('Hello, world!')}")
 
 
 # Build model configuration dictionary
@@ -43,8 +42,34 @@ local_client = AsyncOpenAI(
     base_url=config["openai"]["base_url"], api_key=config["openai"]["api_key"]
 )
 
-# Initialize Docling converter
-docling_converter = DocumentConverter()
+_PROJECT_ROOT = Path(__file__).parent
+
+
+# PyMuPDF ----------------------------
+def extract_text_pymupdf(path: str) -> str:
+    with fitz.open(path) as doc:
+        return "\n".join(page.get_text("text") for page in doc).strip()
+
+
+async def convert_pdf_to_text(path: str) -> str:
+    text = await asyncio.to_thread(extract_text_pymupdf, path)
+    return text
+
+
+# Docling ----------------------------
+def extract_with_docling(file_path: str) -> str:
+    logger.debug("extract_with_docling")
+    from docling.document_converter import DocumentConverter
+
+    converter = DocumentConverter()
+    doc_result = converter.convert(file_path)
+    return doc_result.document.export_to_markdown()
+
+
+async def convert_with_docling(path: str) -> str:
+    logger.debug("convert_with_docling")
+    text = await asyncio.to_thread(extract_with_docling, path)
+    return text
 
 
 async def process_attachments(elements):
@@ -66,22 +91,32 @@ async def process_attachments(elements):
         if hasattr(element, "path") and element.path:
             file_path = Path(element.path)
 
-            # Validate that file_path is within .files/ folder (anchored to project root)
-            project_root = Path(__file__).parent.resolve()
-            allowed_dir = project_root / ".files"
+            # Validate that file_path is within .files/ folder
             try:
-                file_path.resolve().relative_to(allowed_dir)
+                file_path.resolve().relative_to((_PROJECT_ROOT / ".files").resolve())
             except ValueError:
                 logger.warning(f"File {file_path} is not in .files/ folder. Skipping.")
                 continue
 
             try:
+                logger.info(file_path.suffix)
+
+                # Read pure text formats directly, no conversion
                 if file_path.suffix in FILE_FORMAT_WHITELIST:
                     with open(file_path) as f:
                         result = f.read()
+
+                # Convert PDFs with pymupdf
+                elif file_path.suffix.lower() == ".pdf":
+                    result = await convert_pdf_to_text(element.path)
+                    if not result.strip():
+                        raise RuntimeError("PyMuPDF returned empty content")
+
+                # Convert all other formats like DOCX, PPT, Excel with docling
                 else:
-                    result = docling_converter.convert(element.path)
-                    result = result.document.export_to_markdown()
+                    result = await convert_with_docling(element.path)
+                    if not result.strip():
+                        raise RuntimeError("Docling returned empty content")
 
                 # Check token limit before adding document to attached_docs
                 token_count += len(enc.encode(result))
@@ -128,6 +163,7 @@ def set_session_model_settings(selected_model: str) -> None:
 @cl.on_settings_update
 async def setup_agent(settings):
     cl.user_session.set("selected_model", settings["model"])
+    cl.user_session.set("thinking", settings.get("thinking", False))
     # Set max tokens and words in user session based on model selection.
     set_session_model_settings(settings["model"])
 
@@ -139,6 +175,7 @@ async def on_chat_start():
     # Initialize conversation with system prompt
     cl.user_session.set("past_content", [{"role": "system", "content": SYSTEM_PROMPT}])
     cl.user_session.set("selected_model", DEFAULT_MODEL)
+    cl.user_session.set("thinking", False)
 
     # Initialize analytics tracking
     cl.user_session.set(
@@ -172,6 +209,13 @@ async def on_chat_start():
                 label="LLM Model",
                 values=AVAILABLE_MODELS,
                 initial_value=DEFAULT_MODEL,
+            ),
+            Switch(
+                id="thinking",
+                label="Thinking Mode",
+                initial=False,
+                tooltip="Toggle thinking mode on or off.",
+                description="Enable thinking mode for models that support it (e.g. Qwen3). When enabled, the model will reason step by step before answering.",
             ),
         ]
     ).send()
@@ -236,9 +280,10 @@ async def on_message(message: cl.Message):
     msg = cl.Message(content="")
     await msg.send()
 
-    # Create streaming completion
-    stream = await local_client.chat.completions.create(
-        messages=past_content,  # type: ignore[arg-type]
+    thinking_enabled = cl.user_session.get("thinking", False)
+
+    request_kwargs = dict(
+        messages=past_content,
         stream=True,
         model=cl.user_session.get("selected_model", DEFAULT_MODEL),
         max_tokens=cl.user_session.get(
@@ -246,9 +291,17 @@ async def on_message(message: cl.Message):
         ),
         temperature=cl.user_session.get("temperature", config["default_temperature"]),
     )
+    # - thinking OFF  => force reasoning_effort="none"
+    # - thinking ON   => omit reasoning_effort entirely
+    if not thinking_enabled:
+        request_kwargs["reasoning_effort"] = "none"
+
+    stream = await local_client.chat.completions.create(**request_kwargs)
 
     # Stream the response
     async for part in stream:
+        if not part.choices:
+            continue
         if token := part.choices[0].delta.content or "":
             await msg.stream_token(token)
 
@@ -258,12 +311,9 @@ async def on_message(message: cl.Message):
 
 
 @cl.on_chat_end
-async def end() -> None:
+def end():
     """Log detailed analytics when chat session ends."""
     analytics = cl.user_session.get("analytics")
-    if analytics is None:
-        logger.warning("Analytics not available at chat end")
-        return
 
     # Calculate user message statistics
     user_msg_count = analytics["user_message_count"]
@@ -280,11 +330,12 @@ async def end() -> None:
     doc_type_counts = Counter(doc_types) if doc_types else {}
 
     # Log all analytics in a single event
-    logger.analytics(
+    logger.log(
+        ANALYTICS_LEVEL,
         f"chat_session_analytics - "
         f"user_messages={{count: {user_msg_count}, total_tokens: {user_total_tokens}, "
         f"avg_tokens_per_msg: {avg_user_tokens:.1f}, token_counts: {user_token_counts}}}, "
         f"attached_documents={{count: {doc_count}, total_tokens: {total_doc_tokens}, "
         f"avg_tokens_per_doc: {avg_doc_tokens:.1f}, file_types: {dict(doc_type_counts)}, "
-        f"token_counts_per_doc: {doc_token_counts}}}"
+        f"token_counts_per_doc: {doc_token_counts}}}",
     )
