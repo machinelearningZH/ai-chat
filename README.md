@@ -30,19 +30,19 @@ Set up [Ollama](https://ollama.com/) as your local LLM server:
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull models, e.g.:
-ollama pull hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:q6_k
-ollama pull hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:q6_k
+ollama pull hf.co/unsloth/Qwen3.5-0.8B-GGUF:q6_k
+ollama pull hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:q6_k
 
-# To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 32k tokens:
-export OLLAMA_CONTEXT_LENGTH=32768
+# To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 64k tokens:
+export OLLAMA_CONTEXT_LENGTH=64000
 
 # Or create an alias of your model
 ollama show hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q6_K --modelfile > modelfile_qwen3
 nano modelfile_qwen3
 # To change the default context size add this line at the end:
-PARAMETER num_ctx 32768
+PARAMETER num_ctx 64000
 # Then create a new model with the larger context size. This does not duplicate the model files itself.
-ollama create Qwen3-65k -f modelfile_qwen3
+ollama create Qwen3-64k -f modelfile_qwen3
 # Set this model name in config.yaml to use it in the app.
 ```
 
@@ -77,7 +77,7 @@ uv run chainlit run chat.py -w -h --port 8501
 
 We use this AI chat internally as a lightweight local AI assistant with document processing capabilities that we can operate on-premise. We like [Chainlit](https://docs.chainlit.io/get-started/overview) for its simplicity and configurability. We have also experimented successfully with other frameworks like [Open WebUI](https://github.com/open-webui/open-webui).
 
-Our current go-to LLM for small on-premise servers is [Qwen3-30B-A3B-Instruct-2507](https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF), which performs well for general-purpose tasks and works sufficiently well for German language too. For coding tasks we use [Qwen3-Coder-30B-A3B-Instruct](https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF) in this app.
+Our current go-to LLM for small on-premise servers is [Qwen3.5-35B-A3B](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF), which performs well for general-purpose tasks and works sufficiently well for German language too.
 
 ## Project Team
 
