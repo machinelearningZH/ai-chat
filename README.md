@@ -14,7 +14,7 @@
 
 ## Features
 
-- **On-Premise**: Can be setup to work locally
+- **On-Premise**: Can be set up to work locally
 - **Document Processing**: Supports PDF, DOCX, PPTX, XLSX, HTML, Markdown and more. Intelligent document conversion with options for layout and structure preservation
 - **Flexible Configuration**: Customizable models and parameters
 - **Lightweight**: Few dependencies and easy setup
@@ -36,7 +36,7 @@ ollama pull hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:q6_k
 # To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 64k tokens:
 export OLLAMA_CONTEXT_LENGTH=64000
 
-# Or create an alias of your model
+# Or create an alias of your model (check Ollama documentation if this is actually needed)
 ollama show hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q6_K --modelfile > modelfile_qwen3
 nano modelfile_qwen3
 # To change the default context size add this line at the end:
@@ -46,11 +46,11 @@ ollama create Qwen3-64k -f modelfile_qwen3
 # Set this model name in config.yaml to use it in the app.
 ```
 
-Install and setup the app:
+Install and set up the app:
 
 ```bash
-git clone https://github.com/machinelearningZH/amtschat
-cd amtschat
+git clone https://github.com/machinelearningZH/ai-chat
+cd ai-chat
 uv sync
 
 # Adjust the configuration
@@ -77,7 +77,7 @@ uv run chainlit run chat.py -w -h --port 8501
 
 We use this AI chat internally as a lightweight local AI assistant with document processing capabilities that we can operate on-premise. We like [Chainlit](https://docs.chainlit.io/get-started/overview) for its simplicity and configurability. We have also experimented successfully with other frameworks like [Open WebUI](https://github.com/open-webui/open-webui).
 
-Our current go-to LLM for small on-premise servers is [Qwen3.5-35B-A3B](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF), which performs well for general-purpose tasks and works sufficiently well for German language too.
+Our current go-to LLM for small on-premise servers is [Qwen3.5-35B-A3B](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF), which performs well for general-purpose tasks and works sufficiently well for the German language too.
 
 ## Project Team
 
@@ -95,4 +95,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Disclaimer
 
-This software (the Software) incorporates open-source models (the Models) from providers like Ollama, Huggingface, Docling and OpenAI. The app has been developed according to and with the intent to be used under Swiss law. Please be aware that the EU Artificial Intelligence Act (EU AI Act) may, under certain circumstances, be applicable to your use of the Software. You are solely responsible for ensuring that your use of the Software as well as of the underlying Models complies with all applicable local, national and international laws and regulations. By using this Software, you acknowledge and agree (a) that it is your responsibility to assess which laws and regulations, in particular regarding the use of AI technologies, are applicable to your intended use and to comply therewith, and (b) that you will hold us harmless from any action, claims, liability or loss in respect of your use of the Software.
+This software (the Software) incorporates open-source models (the Models) from providers like Ollama, Hugging Face, Docling and OpenAI. The app has been developed according to and with the intent to be used under Swiss law. Please be aware that the EU Artificial Intelligence Act (EU AI Act) may, under certain circumstances, be applicable to your use of the Software. You are solely responsible for ensuring that your use of the Software as well as of the underlying Models complies with all applicable local, national and international laws and regulations. By using this Software, you acknowledge and agree (a) that it is your responsibility to assess which laws and regulations, in particular regarding the use of AI technologies, are applicable to your intended use and to comply therewith, and (b) that you will hold us harmless from any action, claims, liability or loss in respect of your use of the Software.
