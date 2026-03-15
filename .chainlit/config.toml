@@ -62,11 +62,11 @@ max_size_mb = 20
 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" = [".xlsx"]
 
 # Markdown & R Markdown
-"text/markdown"        = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd"]
-"text/x-markdown"      = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd"]
-"application/markdown" = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd"]
+"text/markdown"        = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd", ".RMD"]
+"text/x-markdown"      = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd", ".RMD"]
+"application/markdown" = [".md", ".markdown", ".mdown", ".mkd", ".rmd", ".Rmd", ".RMD"]
 "text/plain"           = [".txt", ".md", ".markdown", ".py", ".r", ".R"]  
-"application/octet-stream" = [".md", ".markdown", ".rmd", ".Rmd", ".csv", ".py", ".r", ".R"]
+"application/octet-stream" = [".md", ".markdown", ".rmd", ".Rmd", ".RMD", ".csv", ".py", ".r", ".R"]
 "text/html"    = [".html", ".htm"]
 
 # Python
@@ -111,7 +111,10 @@ max_size_mb = 20
 
 [UI]
 # Name of the assistant.
-name = "Amtschat"
+name = "AI Chat"
+
+# Language setting (must match a translation file in .chainlit/translations/)
+language = "de-DE"
 
 # default_theme = "dark"
 
