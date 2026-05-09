@@ -15,7 +15,7 @@ Du kannst gängige Dateiformate in den Chat laden und die Inhalte analysieren, z
 Beachte:
 - Die Dateien dürfen jeweils maximal 20 MB gross sein. 
 - Insgesamt kannst du bis zu 10 Dateien pro Chat hochladen. 
-- Die Inhalte dürfen insgesamt nicht mehr als rd. XXX Wörter umfassen.
+- Die Inhalte dürfen insgesamt nicht mehr als das in `config.yaml` konfigurierte Kontextfenster umfassen.
 - Manche PDFs «klemmen» aus unerfindlichen Gründen. Es kann helfen, das PDF in Adobe Acrobat zu öffnen und diese von dort entweder als DOCX oder als PDF/A (-> «Speichern als Sonstiges...») zu exportieren. Das behebt den Importfehler in der Regel. 
 
 #### Fragen und Support

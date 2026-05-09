@@ -1,34 +1,46 @@
 import os
-from pathlib import Path
-from collections import Counter
 import asyncio
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from threading import local
+
 import chainlit as cl
-from chainlit.input_widget import Select, Switch
-from openai import AsyncOpenAI
-import tiktoken
 import fitz
-from _core.utils import get_custom_logger, load_config, ANALYTICS_LEVEL
+import tiktoken
+from chainlit.input_widget import Select, Switch
+from openai import AsyncOpenAI, OpenAIError
+
 from _core.constants import (
-    WELCOME,
-    SYSTEM_PROMPT,
-    HORIZONTAL_LINE,
-    DOCUMENT_PROCESSING_TEMPLATE,
+    CONTEXT_TRIMMED,
+    DOCUMENT_ERROR_TEMPLATE,
     DOCUMENT_ITEM_TEMPLATE,
     DOCUMENT_LIMIT_WARNING,
-    DOCUMENT_SUCCESS,
     DOCUMENT_PROCESSING_STATUS,
-    DOCUMENT_ERROR_TEMPLATE,
-    CONTEXT_TRIMMED,
+    DOCUMENT_PROCESSING_TEMPLATE,
+    DOCUMENT_SUCCESS,
+    HORIZONTAL_LINE,
+    LLM_ERROR,
+    MESSAGE_TOO_LARGE,
+    SYSTEM_PROMPT,
+    WELCOME,
+)
+from _core.utils import (
+    ANALYTICS_LEVEL,
+    get_custom_logger,
+    load_config,
+    resolve_openai_api_key,
 )
 
 logger = get_custom_logger()
 config = load_config()
+runtime_config = config["runtime"]
 
 # Set environment variable for tiktoken cache directory to make sure it uses the local cache.
 # Otherwise, tiktoken may not work on airgapped environments.
 # See also this issue: https://github.com/openai/tiktoken/issues/317
-os.environ["TIKTOKEN_CACHE_DIR"] = "./_tiktoken_cache"
-enc = tiktoken.get_encoding("cl100k_base")
+os.environ["TIKTOKEN_CACHE_DIR"] = runtime_config["tiktoken_cache_dir"]
+enc = tiktoken.get_encoding(runtime_config["token_encoding"])
 
 
 # Build model configuration dictionary
@@ -39,14 +51,91 @@ AVAILABLE_MODELS = [model["name"] for model in config["model"]["models"]]
 FILE_FORMAT_WHITELIST = config["file_format_whitelist"]
 
 local_client = AsyncOpenAI(
-    base_url=config["openai"]["base_url"], api_key=config["openai"]["api_key"]
+    base_url=config["openai"]["base_url"],
+    api_key=resolve_openai_api_key(config["openai"]),
 )
 
 _PROJECT_ROOT = Path(__file__).parent
+_UPLOAD_DIR = (_PROJECT_ROOT / runtime_config["upload_dir"]).resolve()
+_docling_state = local()
+
+
+@dataclass(frozen=True)
+class ContextWindow:
+    messages: list[dict[str, str]]
+    token_counts: list[int]
+    was_trimmed: bool
+    current_message_fits: bool
+
+
+@dataclass(frozen=True)
+class DocumentBudgetDecision:
+    include: bool
+    next_tokens: int
+
+
+def count_tokens(text: str) -> int:
+    return len(enc.encode(text))
+
+
+def normalize_attachment_name(name: str | None) -> str:
+    """Keep uploaded filenames as one-line labels, not prompt structure."""
+    filename = Path(name or "unknown").name
+    normalized = " ".join(filename.splitlines()).strip()
+    return normalized or "unknown"
+
+
+def budget_document_tokens(
+    current_tokens: int, candidate_tokens: int, max_tokens: int
+) -> DocumentBudgetDecision:
+    next_tokens = current_tokens + candidate_tokens
+    if next_tokens > max_tokens:
+        return DocumentBudgetDecision(include=False, next_tokens=current_tokens)
+    return DocumentBudgetDecision(include=True, next_tokens=next_tokens)
+
+
+def build_context_window(
+    past_messages: list[dict[str, str]],
+    past_token_counts: list[int],
+    current_message: dict[str, str],
+    current_message_tokens: int,
+    max_tokens: int,
+) -> ContextWindow:
+    """Trim old history while keeping the system prompt and current user turn."""
+    if len(past_messages) != len(past_token_counts):
+        raise ValueError("past_messages and past_token_counts must have equal length")
+
+    messages = [*past_messages, current_message]
+    token_counts = [*past_token_counts, current_message_tokens]
+    total_tokens = sum(token_counts)
+    was_trimmed = False
+
+    while total_tokens > max_tokens and len(messages) > 2:
+        total_tokens -= token_counts.pop(1)
+        del messages[1]
+        was_trimmed = True
+
+    return ContextWindow(
+        messages=messages,
+        token_counts=token_counts,
+        was_trimmed=was_trimmed,
+        current_message_fits=total_tokens <= max_tokens,
+    )
+
+
+def default_analytics() -> dict:
+    return {
+        "user_message_count": 0,
+        "user_total_tokens": 0,
+        "user_token_count": [],
+        "attached_doc_count": 0,
+        "attached_doc_types": [],
+        "attached_doc_token_count": [],
+    }
 
 
 # PyMuPDF ----------------------------
-def extract_text_pymupdf(path: str) -> str:
+def extract_text_pymupdf(path: str | Path) -> str:
     with fitz.open(path) as doc:
         return "\n".join(page.get_text("text") for page in doc).strip()
 
@@ -57,12 +146,19 @@ async def convert_pdf_to_text(path: str) -> str:
 
 
 # Docling ----------------------------
+def get_docling_converter():
+    converter = getattr(_docling_state, "converter", None)
+    if converter is None:
+        from docling.document_converter import DocumentConverter
+
+        converter = DocumentConverter()
+        _docling_state.converter = converter
+    return converter
+
+
 def extract_with_docling(file_path: str) -> str:
     logger.debug("extract_with_docling")
-    from docling.document_converter import DocumentConverter
-
-    converter = DocumentConverter()
-    doc_result = converter.convert(file_path)
+    doc_result = get_docling_converter().convert(file_path)
     return doc_result.document.export_to_markdown()
 
 
@@ -86,16 +182,18 @@ async def process_attachments(elements):
 
     attached_docs = ""
     token_count = 0
+    max_tokens = cl.user_session.get("max_tokens", config["default_ollama_max_tokens"])
 
     for element in elements:
         if hasattr(element, "path") and element.path:
             file_path = Path(element.path)
+            element_name = normalize_attachment_name(getattr(element, "name", None))
 
-            # Validate that file_path is within .files/ folder
+            # Validate that file_path is within the configured upload folder.
             try:
-                file_path.resolve().relative_to((_PROJECT_ROOT / ".files").resolve())
+                file_path.resolve().relative_to(_UPLOAD_DIR)
             except ValueError:
-                logger.warning(f"File {file_path} is not in .files/ folder. Skipping.")
+                logger.warning(f"File {file_path} is not in upload folder. Skipping.")
                 continue
 
             try:
@@ -103,7 +201,7 @@ async def process_attachments(elements):
 
                 # Read pure text formats directly, no conversion
                 if file_path.suffix in FILE_FORMAT_WHITELIST:
-                    with open(file_path) as f:
+                    with file_path.open(encoding="utf-8") as f:
                         result = f.read()
 
                 # Convert PDFs with pymupdf
@@ -118,32 +216,34 @@ async def process_attachments(elements):
                     if not result.strip():
                         raise RuntimeError("Docling returned empty content")
 
-                # Check token limit before adding document to attached_docs
-                token_count += len(enc.encode(result))
-                if token_count >= cl.user_session.get(
-                    "max_tokens", config["default_ollama_max_tokens"]
-                ):
+                candidate_tokens = count_tokens(result)
+                budget_decision = budget_document_tokens(
+                    token_count, candidate_tokens, max_tokens
+                )
+                if not budget_decision.include:
                     token_limit_message = cl.Message(
-                        content=DOCUMENT_LIMIT_WARNING.format(element_name=element.name)
+                        content=DOCUMENT_LIMIT_WARNING.format(element_name=element_name)
                     )
                     await token_limit_message.send()
                     continue
+                token_count = budget_decision.next_tokens
 
                 attached_docs += DOCUMENT_ITEM_TEMPLATE.format(
                     horizontal_line=HORIZONTAL_LINE,
-                    filename=element.name,
+                    filename=element_name,
                     content=result,
                 )
             except Exception as e:
+                logger.exception("attachment_processing_failed")
                 attached_docs += DOCUMENT_ERROR_TEMPLATE.format(
-                    filename=element.name, error=str(e)
+                    filename=element_name, error=str(e)
                 )
-
-            # Clean up the temporary file that Chainlit created.
-            try:
-                Path(element.path).unlink()
-            except OSError as e:
-                logger.error(f"Error removing file {element.path}: {str(e)}")
+            finally:
+                # Clean up the temporary file that Chainlit created.
+                try:
+                    file_path.unlink()
+                except OSError:
+                    logger.exception("attachment_cleanup_failed")
 
     processing_msg.content = DOCUMENT_SUCCESS
     await processing_msg.update()
@@ -174,21 +274,12 @@ async def on_chat_start():
 
     # Initialize conversation with system prompt
     cl.user_session.set("past_content", [{"role": "system", "content": SYSTEM_PROMPT}])
+    cl.user_session.set("past_content_token_counts", [count_tokens(SYSTEM_PROMPT)])
     cl.user_session.set("selected_model", DEFAULT_MODEL)
     cl.user_session.set("thinking", False)
 
     # Initialize analytics tracking
-    cl.user_session.set(
-        "analytics",
-        {
-            "user_message_count": 0,
-            "user_total_tokens": 0,
-            "user_token_count": [],
-            "attached_doc_count": 0,
-            "attached_doc_types": [],
-            "attached_doc_token_count": [],
-        },
-    )
+    cl.user_session.set("analytics", default_analytics())
 
     # Set max tokens and words in user session based on model selection.
     set_session_model_settings(DEFAULT_MODEL)
@@ -225,8 +316,17 @@ async def on_chat_start():
 async def on_message(message: cl.Message):
     user_message_content = message.content
     elements = message.elements or []
-    past_content = cl.user_session.get("past_content")
-    analytics = cl.user_session.get("analytics")
+    past_content = cl.user_session.get("past_content") or [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
+    past_content_token_counts = cl.user_session.get("past_content_token_counts")
+    if not past_content_token_counts or len(past_content_token_counts) != len(
+        past_content
+    ):
+        past_content_token_counts = [
+            count_tokens(item["content"]) for item in past_content
+        ]
+    analytics = cl.user_session.get("analytics") or default_analytics()
 
     # Process any attached files
     attached_docs = ""
@@ -239,7 +339,7 @@ async def on_message(message: cl.Message):
         )
 
     # Track attached documents analytics
-    doc_token_count = len(enc.encode(attached_docs))
+    doc_token_count = count_tokens(attached_docs)
     analytics["attached_doc_count"] += len(elements)
     analytics["attached_doc_token_count"].append(doc_token_count)
 
@@ -250,32 +350,41 @@ async def on_message(message: cl.Message):
             analytics["attached_doc_types"].append(file_type)
 
     # Track user message analytics
-    user_token_count = len(enc.encode(message.content))
+    user_token_count = count_tokens(message.content)
     analytics["user_message_count"] += 1
     analytics["user_total_tokens"] += user_token_count
     analytics["user_token_count"].append(user_token_count)
 
-    past_content.append({"role": "user", "content": user_message_content})
-
-    # Trim past content if exceeding max tokens
     max_tokens = cl.user_session.get("max_tokens", config["default_ollama_max_tokens"])
-    current_tokens = sum(len(enc.encode(msg["content"])) for msg in past_content)
+    current_message = {"role": "user", "content": user_message_content}
+    current_message_tokens = count_tokens(user_message_content)
+    context_window = build_context_window(
+        past_messages=past_content,
+        past_token_counts=past_content_token_counts,
+        current_message=current_message,
+        current_message_tokens=current_message_tokens,
+        max_tokens=max_tokens,
+    )
+    current_tokens = sum(context_window.token_counts)
     logger.debug(
         f"Current tokens in past content: {current_tokens}, Max tokens allowed: {max_tokens}"
     )
-    if current_tokens > max_tokens:
+
+    if context_window.was_trimmed:
         logger.info(
             "Past content exceeded max tokens. Trimming oldest messages to fit within context window."
         )
-        # Notify user about context trimming
         msg = cl.Message(content=CONTEXT_TRIMMED)
         await msg.send()
 
-        # Trim oldest messages until within token limit
-        while current_tokens > max_tokens and len(past_content) > 1:
-            # We set the index to 1 to avoid removing the system prompt at index 0.
-            current_tokens -= len(enc.encode(past_content[1]["content"]))
-            del past_content[1]
+    if not context_window.current_message_fits:
+        msg = cl.Message(content=MESSAGE_TOO_LARGE)
+        await msg.send()
+        cl.user_session.set("analytics", analytics)
+        return
+
+    past_content = context_window.messages
+    past_content_token_counts = context_window.token_counts
 
     msg = cl.Message(content="")
     await msg.send()
@@ -291,22 +400,39 @@ async def on_message(message: cl.Message):
         ),
         temperature=cl.user_session.get("temperature", config["default_temperature"]),
     )
-    # - thinking OFF  => force reasoning_effort="none"
+    # - thinking OFF  => force configured reasoning_effort
     # - thinking ON   => omit reasoning_effort entirely
-    if not thinking_enabled:
-        request_kwargs["reasoning_effort"] = "none"
+    reasoning_effort = runtime_config.get("reasoning_effort_when_thinking_disabled")
+    if not thinking_enabled and reasoning_effort:
+        request_kwargs["reasoning_effort"] = reasoning_effort
 
-    stream = await local_client.chat.completions.create(**request_kwargs)
+    try:
+        stream = await local_client.chat.completions.create(**request_kwargs)
 
-    # Stream the response
-    async for part in stream:
-        if not part.choices:
-            continue
-        if token := part.choices[0].delta.content or "":
-            await msg.stream_token(token)
+        # Stream the response
+        async for part in stream:
+            if not part.choices:
+                continue
+            if token := part.choices[0].delta.content or "":
+                await msg.stream_token(token)
+    except OpenAIError:
+        logger.exception("llm_request_failed")
+        msg.content = LLM_ERROR
+        await msg.update()
+        cl.user_session.set("analytics", analytics)
+        return
+    except Exception:
+        logger.exception("unexpected_llm_request_failed")
+        msg.content = LLM_ERROR
+        await msg.update()
+        cl.user_session.set("analytics", analytics)
+        return
 
     past_content.append({"role": "assistant", "content": msg.content})
+    past_content_token_counts.append(count_tokens(msg.content))
     cl.user_session.set("past_content", past_content)
+    cl.user_session.set("past_content_token_counts", past_content_token_counts)
+    cl.user_session.set("analytics", analytics)
     await msg.update()
 
 
@@ -314,6 +440,8 @@ async def on_message(message: cl.Message):
 def end():
     """Log detailed analytics when chat session ends."""
     analytics = cl.user_session.get("analytics")
+    if not analytics:
+        return
 
     # Calculate user message statistics
     user_msg_count = analytics["user_message_count"]

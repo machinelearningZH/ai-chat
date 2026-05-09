@@ -32,7 +32,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 # Pull models, e.g.:
 ollama pull hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:q6_k
 
-ollama pull ollama pull qwen3.6
+ollama pull qwen3.6
 
 # https://docs.ollama.com/context-length
 # To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 120k tokens:
@@ -49,14 +49,18 @@ uv sync
 # Adjust the configuration
 nano config.yaml
 
-# Also have a look at _core/constants.py for UI texts and prompts.
-nano _core/constants.py
+# For non-local OpenAI-compatible endpoints, put the key in .env:
+# AI_CHAT_API_KEY=...
+
+# UI texts and prompts are configured in config.yaml under messages.
 
 # Adjust the chainlit configuration
 nano ~/.chainlit/config.toml
 # > Make sure you disable telemetry by setting:
 [telemetry]
 enabled = false
+
+# If you use a custom port, also add it to .chainlit/config.toml allow_origins.
 
 # Start the app (opens in browser at http://localhost:8000):
 uv run chainlit run chat.py
