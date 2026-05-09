@@ -30,28 +30,13 @@ Set up [Ollama](https://ollama.com/) as your local LLM server:
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull models, e.g.:
-ollama pull hf.co/unsloth/Qwen3.5-0.8B-GGUF:q6_k
-ollama pull hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:q6_k
+ollama pull hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:q6_k
 
-# Currently no Qwen3.5 GGUF from Unsloth works in Ollama due to separate mmproj vision files. 
-# See https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b 
-# Instead you need to pull the Qwen-3.5 models from the Ollama library.
-
-ollama pull ollama pull qwen3.5:0.8b
-ollama pull ollama pull qwen3.5:35b
+ollama pull ollama pull qwen3.6
 
 # https://docs.ollama.com/context-length
-# To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 64k tokens:
-export OLLAMA_CONTEXT_LENGTH=64000
-
-# Or create an alias of your model (check Ollama documentation if this is actually needed)
-ollama show hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q6_K --modelfile > modelfile_qwen3
-nano modelfile_qwen3
-# To change the default context size add this line at the end:
-PARAMETER num_ctx 64000
-# Then create a new model with the larger context size. This does not duplicate the model files itself.
-ollama create Qwen3-64k -f modelfile_qwen3
-# Set this model name in config.yaml to use it in the app.
+# To increase the default context size that Ollama uses, you can set the environment variable OLLAMA_CONTEXT_LENGTH. For example, to set it to 120k tokens:
+export OLLAMA_CONTEXT_LENGTH=120000
 ```
 
 Install and set up the app:
@@ -85,7 +70,7 @@ uv run chainlit run chat.py -w -h --port 8501
 
 We use this AI chat internally as a lightweight local AI assistant with document processing capabilities that we can operate on-premise. We like [Chainlit](https://docs.chainlit.io/get-started/overview) for its simplicity and configurability. We have also experimented successfully with other frameworks like [Open WebUI](https://github.com/open-webui/open-webui).
 
-Our current go-to LLM for small on-premise servers is [Qwen3.5-35B-A3B](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF), which performs well for general-purpose tasks and works sufficiently well for the German language too.
+Our current go-to LLM for small on-premise servers is [Qwen3.6-35B-A3B](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF), which performs well for general-purpose tasks and works sufficiently well for the German language too.
 
 ## Project Team
 
