@@ -1,19 +1,12 @@
 # LLM Model Configuration
 model:
-  # Use Qwen3.5-0.8B for fast testing and development. 
-  # Switch to a larger model like Qwen3.5-35B-A3B for better performance.
-  default_selection: "qwen3.5:0.8b"
+  default_selection: "qwen3.6:35b"
   models:
-    # https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b
-    - name: "qwen3.5:0.8b"
+    # https://unsloth.ai/docs/models/qwen3.6#qwen3.6-35b-a3b
+    - name: "qwen3.6:35b"
       temperature: 1.0
-      max_tokens_context: 16000
-      max_tokens_output: 8000
-    # https://unsloth.ai/docs/models/qwen3.5#qwen3.5-35b-a3b
-    - name: "hf.co/unsloth/Qwen3.5-35B-A3B-GGUF:Q6_K"
-      temperature: 1.0
-      max_tokens_context: 200000
-      max_tokens_output: 32000
+      max_tokens_context: 100000
+      max_tokens_output: 16000
 
 # OpenAI API Configuration for Ollama
 openai:
