@@ -1,5 +1,3 @@
-### Anleitung
-
 #### Dateien hochladen
 
 Du kannst gängige Dateiformate in den Chat laden und die Inhalte analysieren, zusammenfassen oder Fragen dazu stellen. Unterstützte Formate:
