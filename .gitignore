@@ -211,3 +211,4 @@ __marimo__/
 .files/
 chainlit_logs.log
 .chainlit/translations/*
+REVIEW.md
