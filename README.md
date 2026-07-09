@@ -78,7 +78,7 @@ Our current go-to LLM for small on-premise servers is [Qwen3.6-35B-A3B](https://
 
 ## Project Team
 
-**Chantal Amrhein**, **Patrick Arnecke** – [Statistisches Amt Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/statistisches-amt/data.html)
+**Chantal Amrhein**, **Patrick Arnecke** – [Amt für Statistik und Daten Kanton Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten.html)
 
 ## Feedback and Contributing
 
