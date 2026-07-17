@@ -1,9 +1,8 @@
 # LLM Model Configuration
 model:
-  default_selection: "qwen3.6:35b"
+  default_selection: "hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k"
   models:
-    # https://unsloth.ai/docs/models/qwen3.6#qwen3.6-35b-a3b
-    - name: "qwen3.6:35b"
+    - name: "hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k"
       temperature: 1.0
       max_tokens_context: 100000
       max_tokens_output: 16000

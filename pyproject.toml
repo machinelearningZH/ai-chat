@@ -1,6 +1,6 @@
 [project]
 name = "ai-chat"
-version = "0.2.0"
+version = "0.3.0"
 description = "A locally operated AI chat with document processing, based on Ollama, Chainlit and Docling."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -12,6 +12,10 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "tiktoken>=0.12.0",
+    # Docling already requires these; declaring them directly lets uv select
+    # CPU-only Linux wheels while retaining the normal macOS development wheels.
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
 ]
 
 [dependency-groups]
@@ -22,6 +26,15 @@ dev = [
 
 [tool.uv]
 exclude-newer = "7 days"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

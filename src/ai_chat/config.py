@@ -112,6 +112,30 @@ def _require_positive_int(config: dict, key: str) -> int:
     return value
 
 
+def apply_environment_overrides(config: dict) -> None:
+    """Apply deployment-specific settings without duplicating config files."""
+    if not isinstance(config, dict):
+        raise ConfigError("config.yaml must contain a mapping")
+    base_url = os.environ.get("AI_CHAT_BASE_URL")
+    if base_url is None:
+        return
+    base_url = base_url.strip()
+    if not base_url:
+        raise ConfigError("AI_CHAT_BASE_URL must not be blank")
+    _require_mapping(config, "openai")["base_url"] = base_url
+
+
+def default_model_context_length(config: dict) -> int:
+    """Return the configured context length for the default model."""
+    model = _require_mapping(config, "model")
+    default_selection = model.get("default_selection")
+    models = model.get("models", [])
+    for model_config in models:
+        if model_config.get("name") == default_selection:
+            return _require_positive_int(model_config, "max_tokens_context")
+    raise ConfigError("model.default_selection must match a configured model name")
+
+
 def _template_fields(template: str) -> set[str]:
     return {
         field_name
@@ -241,6 +265,7 @@ def load_config() -> dict:
         config_path = PROJECT_ROOT / "config.yaml"
         with config_path.open(encoding="utf-8") as config_file:
             loaded_config = yaml.safe_load(config_file)
+        apply_environment_overrides(loaded_config)
         validate_config(loaded_config)
         _config_cache = loaded_config
     return _config_cache

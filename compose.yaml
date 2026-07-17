@@ -1,0 +1,35 @@
+name: ai-chat
+
+services:
+  app:
+    build:
+      context: .
+    image: ai-chat:${AI_CHAT_TAG:-latest}
+    ports:
+      - "${AI_CHAT_PORT:-8000}:8000"
+    environment:
+      AI_CHAT_API_KEY: ${AI_CHAT_API_KEY:-ollama}
+      AI_CHAT_BASE_URL: ${AI_CHAT_BASE_URL:-http://ollama:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    init: true
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.32.0}
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:?Run Compose through make or set OLLAMA_CONTEXT_LENGTH}
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    init: true
+
+volumes:
+  ollama-data:

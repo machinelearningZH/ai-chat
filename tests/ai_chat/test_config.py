@@ -6,6 +6,8 @@ import pytest
 from ai_chat.config import (
     ConfigError,
     JSONFormatter,
+    apply_environment_overrides,
+    default_model_context_length,
     parse_log_level,
     resolve_openai_api_key,
     validate_config,
@@ -92,6 +94,20 @@ def test_validate_config_allows_omitting_reasoning_effort() -> None:
     validate_config(config)
 
 
+def test_default_model_context_length_uses_default_selection() -> None:
+    config = make_config()
+    config["model"]["models"].append(
+        {
+            "name": "larger-model",
+            "temperature": 0.7,
+            "max_tokens_context": 8192,
+            "max_tokens_output": 1024,
+        }
+    )
+
+    assert default_model_context_length(config) == 4096
+
+
 def test_resolve_openai_api_key_prefers_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,6 +135,27 @@ def test_resolve_openai_api_key_requires_env_for_non_localhost(
 
     with pytest.raises(ConfigError, match="AI_CHAT_API_KEY"):
         resolve_openai_api_key(config["openai"])
+
+
+def test_environment_override_replaces_openai_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config()
+    monkeypatch.setenv("AI_CHAT_BASE_URL", "http://ollama:11434/v1")
+
+    apply_environment_overrides(config)
+
+    assert config["openai"]["base_url"] == "http://ollama:11434/v1"
+
+
+def test_environment_override_rejects_blank_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config()
+    monkeypatch.setenv("AI_CHAT_BASE_URL", "   ")
+
+    with pytest.raises(ConfigError, match="AI_CHAT_BASE_URL"):
+        apply_environment_overrides(config)
 
 
 def test_parse_log_level_accepts_configured_names() -> None:
