@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from _core.utils import (
+from ai_chat.config import (
     ConfigError,
     JSONFormatter,
     parse_log_level,
@@ -29,27 +29,30 @@ def make_config() -> dict:
             "base_url": "http://localhost:11434/v1",
             "api_key_env": "AI_CHAT_API_KEY",
             "local_api_key": "ollama",
+            "request_timeout_seconds": 600,
+            "max_retries": 2,
         },
         "runtime": {
             "tiktoken_cache_dir": "./_tiktoken_cache",
             "token_encoding": "cl100k_base",
             "upload_dir": ".files",
             "reasoning_effort_when_thinking_disabled": "none",
+            "max_concurrent_document_conversions": 2,
         },
         "logging": {"log_file": "test.log", "log_level": "INFO"},
+        "chat": {"app_name": "AI Chat"},
         "context_token_buffer": 256,
-        "default_ollama_max_tokens": 4096,
-        "default_max_tokens_output": 1024,
-        "default_temperature": 0.7,
         "file_format_whitelist": [".txt"],
         "messages": {
             "welcome": "Welcome",
             "system_prompt": "System",
             "document_processing_template": "{instructions}{documents}{horizontal_line}",
             "document_item_template": "{horizontal_line}{filename}{content}",
-            "document_error_template": "{filename}{error}",
+            "document_error_template": "{filename}",
             "document_limit_warning": "{element_name}",
             "document_success": "Success",
+            "document_partial_success": "Partial success",
+            "document_failure": "Failure",
             "document_processing_status": "Processing",
             "context_trimmed": "Trimmed",
             "message_too_large": "Too large",
@@ -72,6 +75,21 @@ def test_validate_config_rejects_context_buffer_that_exhausts_model() -> None:
 
     with pytest.raises(ConfigError, match="context_token_buffer"):
         validate_config(config)
+
+
+def test_validate_config_rejects_output_and_buffer_that_exhaust_context() -> None:
+    config = make_config()
+    config["model"]["models"][0]["max_tokens_output"] = 3900
+
+    with pytest.raises(ConfigError, match="max_tokens_output"):
+        validate_config(config)
+
+
+def test_validate_config_allows_omitting_reasoning_effort() -> None:
+    config = make_config()
+    config["runtime"].pop("reasoning_effort_when_thinking_disabled")
+
+    validate_config(config)
 
 
 def test_resolve_openai_api_key_prefers_environment(

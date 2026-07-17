@@ -13,6 +13,8 @@ openai:
   base_url: "http://localhost:11434/v1"
   api_key_env: "AI_CHAT_API_KEY"
   local_api_key: "ollama" # Non-secret dummy value for local Ollama only.
+  request_timeout_seconds: 600
+  max_retries: 2
 
 # Runtime Configuration
 runtime:
@@ -20,6 +22,7 @@ runtime:
   token_encoding: "cl100k_base"
   upload_dir: ".files"
   reasoning_effort_when_thinking_disabled: "none"
+  max_concurrent_document_conversions: 2
 
 # Chat Configuration
 chat:
@@ -30,12 +33,8 @@ logging:
   log_file: "chainlit_logs.log"
   log_level: "INFO"
 
-# Defaults
-default_ollama_max_tokens: 4096
-default_max_tokens_output: 1024
-default_temperature: 0.7
-
-# Decrease max_tokens_context by this value to account for prompt overhead and unprecise token counting.
+# Decrease the input allowance by this value to account for prompt overhead and
+# imprecise token counting. The configured output allowance is reserved separately.
 # We use tiktokens default encoding for estimation, which might differ from the actual model encoding.
 context_token_buffer: 2048
 
@@ -45,11 +44,8 @@ file_format_whitelist:
   - ".csv"
   - ".py"
   - ".md"
-  - ".Rmd"
   - ".rmd"
-  - ".RMD"
   - ".r"
-  - ".R"
 
 # User-facing copy and prompts
 messages:
@@ -88,10 +84,11 @@ messages:
 
     ## Dokument: {filename}
     Das Dokument konnte nicht verarbeitet werden.
-    [Fehler beim Verarbeiten: {error}]
 
   document_limit_warning: "⚠️ Die Dokumente enthalten zu viel Text. Ich lasse {element_name} weg."
   document_success: "Ich habe die Dokumente importiert. Ich bearbeite deine Anfrage."
+  document_partial_success: "⚠️ Ich konnte nur einen Teil der Dokumente importieren. Ich bearbeite deine Anfrage mit den verfügbaren Dokumenten."
+  document_failure: "⚠️ Ich konnte keine Dokumente importieren. Ich bearbeite deine Anfrage ohne Dokumentinhalt."
   document_processing_status: "📄 Ich importiere deine Dokumente..."
   context_trimmed: "⚠️ Die Textmenge in unserem Chat ist zu gross geworden. Ich entferne Nachrichten vom Anfang unseres Chats."
   message_too_large: "⚠️ Deine Nachricht ist zu lang für das aktuell gewählte Kontextfenster. Bitte kürze die Nachricht oder entferne Dokumente."

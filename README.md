@@ -3,7 +3,7 @@
 **A locally operated AI chat with document processing, based on [Ollama](https://ollama.com/), [Chainlit](https://github.com/Chainlit/chainlit) and [Docling](https://github.com/docling-project/docling).**
 
 ![GitHub License](https://img.shields.io/github/license/machinelearningZH/ai-chat)
-[![PyPI - Python](https://img.shields.io/badge/python-v3.12+-blue.svg)](https://github.com/machinelearningZH/ai-chat)
+[![PyPI - Python](https://img.shields.io/badge/python-v3.13-blue.svg)](https://github.com/machinelearningZH/ai-chat)
 [![GitHub Stars](https://img.shields.io/github/stars/machinelearningZH/ai-chat.svg)](https://github.com/machinelearningZH/ai-chat/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/machinelearningZH/ai-chat.svg)](https://github.com/machinelearningZH/ai-chat/issues)
 [![GitHub Pull Requests](https://img.shields.io/github/issues-pr/machinelearningZH/ai-chat.svg)](https://img.shields.io/github/issues-pr/machinelearningZH/ai-chat)
@@ -54,20 +54,18 @@ nano config.yaml
 
 # UI texts and prompts are configured in config.yaml under messages.
 
-# Adjust the chainlit configuration
-nano ~/.chainlit/config.toml
-# > Make sure you disable telemetry by setting:
-[telemetry]
-enabled = false
+# Adjust the project-local Chainlit configuration if needed.
+nano .chainlit/config.toml
+# Telemetry is already disabled with project.enable_telemetry = false.
 
 # If you use a custom port, also add it to .chainlit/config.toml allow_origins.
 
 # Start the app (opens in browser at http://localhost:8000):
-uv run chainlit run chat.py
+uv run chainlit run src/app.py
 
 # Or set a specific port, watch and headless mode, and more:
 # https://docs.chainlit.io/backend/command-line
-uv run chainlit run chat.py -w -h --port 8501
+uv run chainlit run src/app.py -w -h --port 8501
 ```
 
 ## Project Information
