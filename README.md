@@ -1,6 +1,6 @@
 # Local AI Chat with Document Processing
 
-A local AI chat with document processing, built with [Ollama](https://ollama.com/), [Chainlit](https://github.com/Chainlit/chainlit), and [Docling](https://github.com/docling-project/docling).
+A local AI chat with document processing, built with an OpenAI-compatible model server, [Chainlit](https://github.com/Chainlit/chainlit), and [Docling](https://github.com/docling-project/docling). Ollama, vLLM, and llama.cpp are supported local serving options.
 
 ![GitHub License](https://img.shields.io/github/license/machinelearningZH/ai-chat)
 [![PyPI - Python](https://img.shields.io/badge/python-v3.13-blue.svg)](https://github.com/machinelearningZH/ai-chat)
@@ -68,6 +68,92 @@ uv run chainlit run src/app.py -w -h --port 8501
 
 See the [Chainlit CLI documentation](https://docs.chainlit.io/backend/command-line) for more options.
 
+## Alternative Model Servers
+
+The app uses the OpenAI-compatible chat completions API. vLLM and llama.cpp can
+therefore replace Ollama without changes to the Python environment. Install each
+server in its own supported environment; neither server is an app dependency.
+
+The app sends the selected `model.models[].name` from `config.yaml`. By default,
+the launch helpers expose the server model as `model.default_selection`. Keep
+the configured context and output limits within the model and server limits;
+setting a larger value in `config.yaml` does not increase a model server's
+capacity.
+
+### vLLM
+
+[Install vLLM](https://docs.vllm.ai/en/latest/getting_started/installation/) on a
+supported accelerator, then start it in one terminal. `MODEL` is a Hugging Face
+model ID or a local model directory, not an Ollama model tag:
+
+```bash
+make serve-vllm MODEL=google/gemma-3-4b-it
+```
+
+In another terminal, start the app against vLLM:
+
+```bash
+make run-vllm
+```
+
+Verify the server independently at <http://127.0.0.1:8001/v1/models> if the app
+cannot connect.
+
+The defaults are `127.0.0.1:8001`. Override the port or the API alias when
+needed:
+
+```bash
+make serve-vllm MODEL=/models/my-model VLLM_PORT=9001 APP_MODEL_NAME=my-model
+make run-vllm VLLM_PORT=9001
+```
+
+When `APP_MODEL_NAME` differs from the current `config.yaml` model name, update
+`model.default_selection` and the corresponding `model.models[].name` to the
+same value before starting the app. Extra vLLM options can be supplied by calling
+the helper directly, for example:
+
+```bash
+SERVED_MODEL_NAME=my-model MAX_MODEL_LEN=32768 \
+  ./scripts/serve-vllm.sh google/gemma-3-4b-it --tensor-parallel-size 2
+```
+
+### llama.cpp
+
+[Install or build llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
+so that `llama-server` is on `PATH`, then point the helper at a local GGUF file:
+
+```bash
+make serve-llamacpp MODEL=/models/model.gguf
+```
+
+In another terminal, start the app against llama.cpp:
+
+```bash
+make run-llamacpp
+```
+
+Verify the server independently at <http://127.0.0.1:8002/v1/models> if the app
+cannot connect.
+
+The defaults are `127.0.0.1:8002`. Pass llama.cpp-specific options directly to
+the helper; for example, to offload layers to the GPU:
+
+```bash
+SERVED_MODEL_NAME=my-model MAX_MODEL_LEN=32768 \
+  ./scripts/serve-llamacpp.sh /models/model.gguf --n-gpu-layers 99
+```
+
+Set `LLAMA_SERVER_BIN` if the executable has a different path. As with vLLM,
+the served alias must equal the model name in `config.yaml`.
+
+If either server reports that `reasoning_effort` is unsupported, set
+`runtime.reasoning_effort_when_thinking_disabled: null` in `config.yaml`; this
+removes that optional field from requests when thinking mode is disabled.
+
+Both helpers bind to localhost by default. If you intentionally use
+`SERVER_HOST=0.0.0.0`, protect the endpoint with network controls and server
+authentication; the default local dummy API key is not authentication.
+
 ## Run Scenarios
 
 The Makefile provides shortcuts for supported local deployment scenarios. It wraps `uv` and Docker Compose; you can also run the underlying commands directly.
@@ -75,6 +161,8 @@ The Makefile provides shortcuts for supported local deployment scenarios. It wra
 | Scenario | Command | Notes |
 | --- | --- | --- |
 | Native app + native Ollama | `make run-native` | Recommended on macOS to retain Metal acceleration |
+| Native app + native vLLM | `make serve-vllm` + `make run-vllm` | Typically Linux with a supported accelerator |
+| Native app + native llama.cpp | `make serve-llamacpp` + `make run-llamacpp` | GGUF models; supports CPU and platform-specific GPU offload |
 | App container + native Ollama | `make app-host` | Uses `host.docker.internal` |
 | App + CPU Ollama containers | `make stack-cpu` | Portable, but inference is CPU-only |
 | App + NVIDIA Ollama containers | `make stack-nvidia` | Linux with NVIDIA Container Toolkit |
