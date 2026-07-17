@@ -174,9 +174,7 @@ unpacked (about 500 MB compressed); exact sizes vary by platform.
 
 ## Project Information
 
-We use this AI chat internally as a lightweight local AI assistant with document processing capabilities that we can operate on-premise. We like [Chainlit](https://docs.chainlit.io/get-started/overview) for its simplicity and configurability. We have also experimented successfully with other frameworks like [Open WebUI](https://github.com/open-webui/open-webui).
-
-Our current go-to LLM for small on-premise servers is [Gemma 4 E2B](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF), which performs well for general-purpose tasks and works sufficiently well for the German language too.
+We use this AI chat internally as a lightweight local AI assistant with document processing capabilities that we can operate on-premise. We like [Chainlit](https://docs.chainlit.io/get-started/overview) for its simplicity and configurability.
 
 ## Project Team
 
