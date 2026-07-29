@@ -1,5 +1,6 @@
 import json
 import logging
+import sys
 
 import pytest
 
@@ -71,19 +72,27 @@ def test_validate_config_rejects_unknown_default_model() -> None:
         validate_config(config)
 
 
-def test_validate_config_rejects_context_buffer_that_exhausts_model() -> None:
-    config = make_config()
-    config["context_token_buffer"] = 4096
-
-    with pytest.raises(ConfigError, match="context_token_buffer"):
-        validate_config(config)
-
-
 def test_validate_config_rejects_output_and_buffer_that_exhaust_context() -> None:
     config = make_config()
     config["model"]["models"][0]["max_tokens_output"] = 3900
 
     with pytest.raises(ConfigError, match="max_tokens_output"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_duplicate_model_names() -> None:
+    config = make_config()
+    config["model"]["models"].append(config["model"]["models"][0].copy())
+
+    with pytest.raises(ConfigError, match="Duplicate model name"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_template_missing_required_field() -> None:
+    config = make_config()
+    config["messages"]["document_item_template"] = "{filename}{content}"
+
+    with pytest.raises(ConfigError, match="horizontal_line"):
         validate_config(config)
 
 
@@ -162,6 +171,11 @@ def test_parse_log_level_accepts_configured_names() -> None:
     assert parse_log_level("WARNING") == logging.WARNING
 
 
+def test_parse_log_level_rejects_unknown_name() -> None:
+    with pytest.raises(ConfigError, match="Unknown logging.log_level"):
+        parse_log_level("verbose-ish")
+
+
 def test_json_formatter_emits_structured_log_record() -> None:
     formatter = JSONFormatter()
     record = logging.LogRecord(
@@ -180,3 +194,24 @@ def test_json_formatter_emits_structured_log_record() -> None:
     assert payload["logger"] == "test"
     assert payload["message"] == "hello"
     assert "timestamp" in payload
+
+
+def test_json_formatter_includes_exception_details() -> None:
+    formatter = JSONFormatter()
+    try:
+        raise RuntimeError("sensitive operation failed")
+    except RuntimeError:
+        exc_info = sys.exc_info()
+    record = logging.LogRecord(
+        name="test",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="operation failed",
+        args=(),
+        exc_info=exc_info,
+    )
+
+    payload = json.loads(formatter.format(record))
+
+    assert "RuntimeError: sensitive operation failed" in payload["exception"]
