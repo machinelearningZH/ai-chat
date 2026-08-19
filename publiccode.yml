@@ -1,0 +1,58 @@
+publiccodeYmlVersion: 0.5.0
+name: Local AI Chat
+url: https://github.com/machinelearningZH/ai-chat
+releaseDate: 2026-01-29
+platforms:
+  - windows
+  - mac
+  - linux
+categories:
+  - knowledge-management
+developmentStatus: stable
+softwareType: standalone/other
+intendedAudience:
+  scope:
+    - government
+organisation:
+  uri: https://ld.admin.ch/canton/1
+  name: Zurich
+description:
+  en:
+    localisedName: Local AI Chat
+    shortDescription: A locally-run AI chat assistant, offering a secure,
+      self-hosted alternative to cloud services like ChatGPT.
+    longDescription: AI Chat gives you a familiar ChatGPT-like chat experience, but
+      running entirely on your own infrastructure instead of a third-party cloud
+      service. You can ask questions, brainstorm, or get help with everyday
+      tasks, just as you would with any commercial AI assistant — without your
+      conversations or data ever leaving your organization's servers. Beyond
+      simple chat, you can upload documents in common formats like PDF, Word,
+      PowerPoint, and Excel, and the tool will read and understand them while
+      preserving their original layout and structure. This makes it easy to ask
+      questions about a report, summarize a document, or pull out specific
+      information without manually searching through it yourself. Because
+      everything runs locally, it's particularly well suited for working with
+      confidential or sensitive material that shouldn't be shared with external
+      AI providers. The interface, prompts, and behavior can be customized to
+      match your organization's needs and language. In short, it offers the
+      convenience of modern AI chat tools with the privacy and control of a
+      fully self-hosted solution.
+    documentation: https://github.com/machinelearningZH/ai-chat/blob/main/README.md
+    features:
+      - LLM
+      - Document Processing
+      - Chatbot
+      - Chat Interface
+      - On Premise
+legal:
+  license: MIT
+maintenance:
+  type: internal
+  contacts:
+    - name: Team Data, Amt für Statistik und Daten
+      email: datashop@statistik.zh.ch
+localisation:
+  localisationReady: true
+  availableLanguages:
+    - en
+    - de
