@@ -1,6 +1,5 @@
 from ai_chat.config import load_config
 
-
 _MESSAGES = load_config()["messages"]
 
 WELCOME = _MESSAGES["welcome"].strip()

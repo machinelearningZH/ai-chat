@@ -1,9 +1,10 @@
 import asyncio
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
-import ai_chat.app as app
+from ai_chat import app
 from ai_chat.app import (
     budget_document_tokens,
     build_context_window,
@@ -21,7 +22,7 @@ from ai_chat.messages import (
 
 
 class FakeMessage:
-    instances: list["FakeMessage"] = []
+    instances: ClassVar[list["FakeMessage"]] = []
 
     def __init__(self, content: str, **_kwargs) -> None:
         self.content = content
