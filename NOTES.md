@@ -1,0 +1,101 @@
+# Test-suite audit
+
+## Scope and baseline
+
+Reviewed all Python application modules and both existing test modules, repository
+instructions, README/configuration contracts, pytest settings, Makefile, and CI.
+This is not an exhaustive deployment, security, or dependency audit.
+
+Pytest uses its standard `test_*.py` discovery with `src` on `pythonpath`.
+CI runs `uv sync --locked`, `uv run ruff format --check .`,
+`uv run ruff check .`, and `uv run pytest`, followed by Compose validation,
+image build, and container health checks. There were no explicit test exclusions,
+skips, xfails, or async pytest tests whose bodies were never awaited.
+Baseline: 30 passed, six third-party deprecation warnings.
+
+The inherited virtual environment referenced a missing interpreter. `uv sync
+--locked` restored declared dependencies without changing the lockfile. Local
+checks used `UV_NO_CACHE=1 uv run --offline --no-sync` because the sandbox could
+not access the normal uv cache. Python was 3.13.15; CI pins 3.13.14.
+
+## Behavior map and changes
+
+| Behavior / evidence | Before | Protection added or strengthened |
+| --- | --- | --- |
+| Default model selection (README and helper docstring) | Selected first entry only | Select second model; catches always-first lookup |
+| Valid input allowance (config comments and validation contract) | Typical subtraction and over-limit rejection | Exact exhaustion versus one token remaining; invalid integer types including booleans |
+| Local dummy keys (README) | localhost and ordinary remote host | IPv4/IPv6 loopback and deceptive/non-loopback hostnames |
+| YAML startup loading (loader docstring, README overrides) | Helpers only | Real YAML, override before validation, cache after success, retry after rejected config |
+| Preserve system/current messages and trim complete old turns (helper docstring, UI warning) | One removed turn | Multiple turns, exact fit, newest-turn retention, aligned counts, unchanged caller history |
+| Streaming chat (README chat feature; OpenAI-compatible request boundary) | Oversize rejection only | SDK chunk objects, metadata/empty chunks, ordered output, selected request settings, optional reasoning field, complete history and token counts |
+| Failed model response (configured error copy) | None | Creation and mid-stream errors, visible error, unchanged history, analytics and subsequent successful request |
+| Model setting changes (README configurable models) | Name allowlist only | Different model budgets/sampling and unknown-selection fallback |
+| Uploaded documents (README feature, status/warning copy) | Text success/error and single over-budget file | Real two-page PDF, malformed/empty PDFs, symlink escape, cumulative budget, skipped-file budget preservation and deletion |
+| Awaited UI effects | No-op send/update methods | Per-test fake records awaited sends, streamed tokens and updates; explicit no-model-call assertion for oversized input |
+
+Failure history remaining unchanged is a conservative application-level contract
+inferred from committing completed turns and the configured failure message;
+README does not explicitly specify failed-turn retention. PDF whitespace is not
+a public contract: the test verifies page text in order after whitespace
+normalization. SDK request/stream tests replace the external completion boundary,
+not the application handler. They do not validate HTTP framing or SDK retries.
+
+## Harness decisions
+
+- App import loads configuration, creates a logger/client, and initializes Chainlit.
+  Tests now use a temporary config/log/Chainlit root and dummy credentials, disable
+  `.env` loading, and reject socket connections, including during collection.
+  The repository's actual YAML, Chainlit config and tokenizer cache are still used.
+- UI/session fakes are function-scoped; no shared class-level message registry.
+- Runtime, unraisable-exception, and thread-exception warnings fail tests so lost
+  async work cannot quietly pass. Existing dependency deprecations remain visible.
+- No dependencies or production code changed. Small explicit matrices were enough;
+  property-testing machinery would add little value for the selected contracts.
+
+## Verification
+
+Commands below used the restored existing environment:
+
+```sh
+UV_NO_CACHE=1 uv run --offline --no-sync ruff format --check .
+UV_NO_CACHE=1 uv run --offline --no-sync ruff check .
+UV_NO_CACHE=1 uv run --offline --no-sync pytest -ra
+```
+
+Result: formatting and lint pass; 68 tests pass, no skips/xfails, six existing
+third-party warnings. The full suite was also run in reverse collection order:
+
+```sh
+UV_NO_CACHE=1 uv run --offline --no-sync python - <<'PY'
+import pytest
+class ReverseOrder:
+    def pytest_collection_modifyitems(self, items):
+        items.reverse()
+raise SystemExit(pytest.main(['-q'], plugins=[ReverseOrder()]))
+PY
+```
+
+All 68 passed. Focused fault checks used the following command shape for each
+corresponding test node: `UV_NO_CACHE=1 uv run --offline --no-sync pytest -q NODE`.
+Each temporary production edit was restored in `finally`; assertions failed for:
+
+| Temporary fault | NODE (under `tests/ai_chat/`) |
+| --- | --- |
+| Always select first model | `test_config.py::test_default_model_context_length_uses_default_selection` |
+| Reject exact context fit | `test_app.py::test_context_retains_newest_complete_turns_without_mutating_history` |
+| Discard streamed tokens | `test_app.py::test_on_message_streams_and_commits_complete_turn` |
+| Omit awaited status update | `test_app.py::test_process_attachments_reports_per_file_success` |
+| Ignore prior document token usage | `test_app.py::test_attachment_budget_is_cumulative_and_skipped_file_does_not_consume_it` |
+| Persist failed user turn | `test_app.py::test_on_message_model_failure_preserves_history_and_can_recover` |
+| Omit upload deletion | `test_app.py::test_process_attachments_extracts_real_pdf_and_cleans_up` |
+
+The first cumulative-budget test survived its mutation because all individually
+fitting documents also fit together. An additional one-token document after the
+budget is exhausted now distinguishes cumulative from per-file limits.
+
+No production defect was confirmed by this work. See PLAN.md for unverified
+boundaries; passing these tests is not evidence of complete production coverage.
+
+## 2026-10-26: eMudhra/emSign certificate update
+
+Require certifi >=2026.10.19; only certifi and affected pip changed package versions. Keep the seven-day cooldown. Remove only the incident certifi exception after 2026-10-27 03:24:17 Europe/Zurich, then relock and sync. Build/CI uv pins are 0.13.5; Python image stages patch existing pip with secure uv. Deployment images still require a fresh build (`--pull --no-cache`) and verification before redeployment. Advisory: https://discuss.python.org/t/109576.
