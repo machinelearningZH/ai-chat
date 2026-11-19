@@ -236,26 +236,14 @@ The Linux image uses CPU-only PyTorch wheels because document conversion does no
 
 ## Usage Statistics
 
-The app does not log chat content, file names, or user identifiers. It only adds to anonymous counters per day, and for messages per day and hour, in a local SQLite file (`usage_stats.db_file` in `config.yaml`; set it to `null` to disable):
-
-- chats, and how many had a follow-up message, reached 6, 11, or 21 messages, used documents, or used thinking mode
-- messages, and how many used documents or thinking mode, plus their token total
-- answers generated, their token total, their total duration, and the part of that duration spent streaming the answer text
-- documents processed, failed, and skipped, their token total, uploaded bytes, total import time, and file types from a fixed list
-- trimmed histories, oversized messages, and model errors
-- messages per day and hour of day
+The app keeps anonymous, aggregate usage counters in a local SQLite file: no chat content, file names, or user identifiers.
 
 ```bash
-make stats                          # one-screen overview, one column per month
-make stats-detailed                 # every counter, including each file type
-make stats SINCE=2026-11-01 BY=day  # one column per day since a date
+make stats             # overview
+make stats DETAILED=1  # every counter
 ```
 
-`make stats-detailed` lists every counter as a table row with exact totals, followed by full bar charts for the hours and weekdays. `tokens/second` is the generation speed from the first answer token on; the wait before it, which includes thinking, is listed as `until first token`.
-
-`make stats` reads the counters of the Compose app while it is running, and otherwise those of the native app. The first output line names the source.
-
-Days and hours follow `usage_stats.timezone` in `config.yaml`, not the server clock, which is UTC inside the container. If a counter cannot be written while the app runs, the chat continues and the error goes to the log file and to stderr. With very few users, daily counts, and even more so the messages per day and hour, can relate to a person; check this against your data protection requirements.
+To turn the counters off, set `usage_stats.db_file` to `null` in `config.yaml`.
 
 ## Project Team
 
