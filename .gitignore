@@ -209,6 +209,7 @@ __marimo__/
 # App specific
 .DS_Store
 .files/
+/stats/
 chainlit_logs.log
 .chainlit/translations/*
 REVIEW.md

@@ -9,6 +9,7 @@ from ai_chat.config import (
     JSONFormatter,
     apply_environment_overrides,
     default_model_context_length,
+    get_custom_logger,
     parse_log_level,
     resolve_openai_api_key,
     validate_config,
@@ -43,6 +44,10 @@ def make_config() -> dict:
             "max_concurrent_document_conversions": 2,
         },
         "logging": {"log_file": "test.log", "log_level": "INFO"},
+        "usage_stats": {
+            "db_file": "stats/usage_stats.sqlite",
+            "timezone": "Europe/Zurich",
+        },
         "chat": {"app_name": "AI Chat"},
         "context_token_buffer": 256,
         "file_format_whitelist": [".txt"],
@@ -101,6 +106,40 @@ def test_validate_config_allows_omitting_reasoning_effort() -> None:
     config["runtime"].pop("reasoning_effort_when_thinking_disabled")
 
     validate_config(config)
+
+
+def test_validate_config_allows_disabling_usage_stats() -> None:
+    config = make_config()
+    config["usage_stats"]["db_file"] = None
+
+    validate_config(config)
+
+
+def test_validate_config_requires_a_decision_about_usage_stats() -> None:
+    config = make_config()
+    del config["usage_stats"]
+
+    with pytest.raises(ConfigError, match="set db_file to null to disable") as error:
+        validate_config(config)
+
+    assert "usage_stats" in str(error.value)
+
+
+def test_validate_config_rejects_blank_usage_stats_file() -> None:
+    config = make_config()
+    config["usage_stats"]["db_file"] = ""
+
+    with pytest.raises(ConfigError, match=r"usage_stats\.db_file"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("timezone", ["Mars/Olympus_Mons", "", None, 2])
+def test_validate_config_rejects_unknown_usage_stats_time_zone(timezone) -> None:
+    config = make_config()
+    config["usage_stats"]["timezone"] = timezone
+
+    with pytest.raises(ConfigError, match=r"usage_stats\.timezone"):
+        validate_config(config)
 
 
 def test_default_model_context_length_uses_default_selection() -> None:
@@ -176,6 +215,21 @@ def test_parse_log_level_accepts_configured_names() -> None:
 def test_parse_log_level_rejects_unknown_name() -> None:
     with pytest.raises(ConfigError, match="Unknown logging.log_level"):
         parse_log_level("verbose-ish")
+
+
+def test_custom_logger_sends_errors_to_stderr_as_well(tmp_path, capsys) -> None:
+    log_file = tmp_path / "app.log"
+    logger = get_custom_logger("test_errors_to_stderr", log_file)
+
+    logger.info("routine_event")
+    logger.error("write_failed")
+    for handler in logger.handlers:
+        handler.close()
+
+    stderr = capsys.readouterr().err
+    assert json.loads(stderr)["message"] == "write_failed"
+    assert "routine_event" in log_file.read_text(encoding="utf-8")
+    assert "write_failed" in log_file.read_text(encoding="utf-8")
 
 
 def test_json_formatter_emits_structured_log_record() -> None:

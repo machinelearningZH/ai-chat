@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +17,22 @@ from ai_chat.messages import (
     DOCUMENT_LIMIT_WARNING,
     DOCUMENT_PARTIAL_SUCCESS,
     DOCUMENT_SUCCESS,
+    LLM_ERROR,
     MESSAGE_TOO_LARGE,
 )
+from ai_chat.usage_stats import UsageStats
+
+
+@pytest.fixture(autouse=True)
+def app_stats(tmp_path, monkeypatch) -> UsageStats:
+    """Give every test here its own empty stats file, wired into the app.
+
+    tests/conftest.py already keeps the configured file out of reach. This keeps
+    the counters of one test out of the next.
+    """
+    stats = UsageStats(tmp_path / "usage.sqlite")
+    monkeypatch.setattr(app, "stats", stats)
+    return stats
 
 
 def test_calculate_input_token_limit_reserves_output_and_estimation_buffer() -> None:
@@ -218,7 +233,7 @@ def test_process_attachments_skips_document_over_budget(
 
 
 def test_on_message_stops_before_llm_when_current_message_is_too_large(
-    chat,
+    chat, app_stats
 ) -> None:
     session = chat.session
     session.values.update(
@@ -234,9 +249,12 @@ def test_on_message_stops_before_llm_when_current_message_is_too_large(
     assert [message.content for message in chat.messages] == [MESSAGE_TOO_LARGE]
     chat.create.assert_not_called()
     assert chat.messages[0].sent == [MESSAGE_TOO_LARGE]
-    assert session.values["analytics"]["user_message_count"] == 1
-    assert session.values["analytics"]["user_total_tokens"] > 0
     assert session.values["past_content"] == [{"role": "system", "content": "system"}]
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 1
+    assert counters["message_tokens"] > 0
+    assert counters["message_too_large"] == 1
+    assert "chats_with_follow_up" not in counters
 
 
 @pytest.mark.parametrize(
@@ -302,7 +320,7 @@ async def response_chunks(*contents):
     [(False, "none", "none"), (True, "none", None), (False, None, None)],
 )
 def test_on_message_streams_and_commits_complete_turn(
-    chat, monkeypatch, thinking, configured_effort, expected_effort
+    chat, app_stats, monkeypatch, thinking, configured_effort, expected_effort
 ) -> None:
     monkeypatch.setitem(
         app.runtime_config, "reasoning_effort_when_thinking_disabled", configured_effort
@@ -352,16 +370,17 @@ def test_on_message_streams_and_commits_complete_turn(
     ]
     # Known cl100k_base examples, independent of the app's token-count helper.
     assert chat.session.values["past_content_token_counts"] == [1, 1, 2]
-    assert chat.session.values["analytics"]["user_token_count"] == [1]
+    (counters,) = app_stats.read().values()
+    assert counters["message_tokens"] == 1
+    assert counters["response_tokens"] == 2
+    assert counters.get("messages_with_thinking", 0) == int(thinking)
 
 
 @pytest.mark.parametrize("failure_stage", ["create", "stream"])
 def test_on_message_model_failure_preserves_history_and_can_recover(
-    chat, failure_stage
+    chat, app_stats, failure_stage
 ) -> None:
     from openai import OpenAIError
-
-    from ai_chat.messages import LLM_ERROR
 
     history = [{"role": "system", "content": "system"}]
     chat.session.values.update(
@@ -385,7 +404,10 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
         {"role": "system", "content": "system"}
     ]
     assert chat.session.values["past_content_token_counts"] == [1]
-    assert chat.session.values["analytics"]["user_message_count"] == 1
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 1
+    assert counters["llm_errors"] == 1
+    assert "responses" not in counters
 
     chat.create.side_effect = None
     chat.create.return_value = response_chunks("Hello")
@@ -395,8 +417,12 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
         "Hi",
         "Hello",
     ]
-    assert chat.session.values["analytics"]["user_message_count"] == 2
     assert chat.messages[1].updated == ["Hello"]
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 2
+    assert counters["chats_with_follow_up"] == 1
+    assert counters["llm_errors"] == 1
+    assert counters["responses"] == 1
 
 
 def test_process_attachments_rejects_symlink_escape(
@@ -543,3 +569,222 @@ def test_settings_change_applies_selected_models_limits_and_fallback(
         "temperature": 0.7,
         "thinking": False,
     }
+
+
+def test_on_message_counts_each_chat_once(chat, app_stats) -> None:
+    chat.session.values.update({"max_tokens": 0, "thinking": True})
+
+    for _ in range(3):
+        asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 3
+    assert counters["messages_with_thinking"] == 3
+    assert counters["chats"] == 1
+    assert counters["chats_with_follow_up"] == 1
+    assert counters["chats_with_thinking"] == 1
+    assert "chats_with_documents" not in counters
+
+
+def test_on_message_counts_when_a_chat_reaches_a_length(chat, app_stats) -> None:
+    for messages in (1, 11):
+        chat.session.values.clear()
+        chat.session.values["max_tokens"] = 0
+        for _ in range(messages):
+            asyncio.run(
+                app.on_message(SimpleNamespace(content="question", elements=[]))
+            )
+
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 12
+    assert counters["chats"] == 2
+    assert counters["chats_with_follow_up"] == 1
+    assert counters["chats_with_6_messages"] == 1
+    assert counters["chats_with_11_messages"] == 1
+    assert "chats_with_21_messages" not in counters
+
+
+def test_on_message_counts_uploaded_documents(
+    tmp_path, monkeypatch, chat, app_stats
+) -> None:
+    upload = tmp_path / "large.txt"
+    upload.write_text("content", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    chat.session.values["max_tokens"] = 0
+
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="question",
+                elements=[SimpleNamespace(path=str(upload), name="large.txt")],
+            )
+        )
+    )
+
+    (counters,) = app_stats.read().values()
+    assert counters["messages_with_documents"] == 1
+    assert counters["chats_with_documents"] == 1
+    assert counters["documents_skipped"] == 1
+    assert counters["uploaded_bytes"] == len("content")
+    assert counters["document_ms"] == 1500
+    assert "documents_processed" not in counters
+
+
+def test_on_message_counts_and_times_successful_responses(
+    monkeypatch, chat, app_stats
+) -> None:
+    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Hello", " world")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (counters,) = app_stats.read().values()
+    assert counters["responses"] == 1
+    assert counters["response_ms"] == 1500
+    assert counters["response_stream_ms"] == 1500
+    # Known cl100k_base example, independent of the app's token-count helper.
+    assert counters["response_tokens"] == 2
+    assert "llm_errors" not in counters
+
+
+def test_on_message_counts_trimmed_history(chat, app_stats) -> None:
+    chat.session.values.update(
+        {
+            "past_content": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+            "past_content_token_counts": [1, 50, 50],
+            "max_tokens": 60,
+        }
+    )
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Hello")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (counters,) = app_stats.read().values()
+    assert counters["history_trimmed"] == 1
+    assert counters["responses"] == 1
+    assert "message_too_large" not in counters
+
+
+def test_on_message_counts_an_unexpected_model_error(chat, app_stats) -> None:
+    chat.create.side_effect = RuntimeError("not an SDK error")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    assert chat.messages[0].updated == [LLM_ERROR]
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 1
+    assert counters["llm_errors"] == 1
+    assert "responses" not in counters
+
+
+def test_on_message_writes_its_counters_in_two_batches_off_the_event_loop(
+    monkeypatch, chat, app_stats
+) -> None:
+    batches: list[tuple[set[str], threading.Thread]] = []
+    record = app_stats.record
+
+    def record_and_note(usage) -> None:
+        batches.append((set(usage), threading.current_thread()))
+        record(usage)
+
+    monkeypatch.setattr(app_stats, "record", record_and_note)
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Hello")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (message, message_thread), (response, response_thread) = batches
+    assert {"chats", "messages", "message_tokens"} <= message
+    assert {"responses", "response_ms", "response_tokens"} <= response
+    assert threading.main_thread() not in (message_thread, response_thread)
+
+
+def shown_when_counted(monkeypatch, chat, app_stats, metric: str) -> list[dict]:
+    """Collect what the chat shows at the moment the metric is written.
+
+    A locked stats file holds a write up for seconds, so the user must already
+    have the outcome by then.
+    """
+    snapshots: list[dict] = []
+
+    def note(usage) -> None:
+        if metric in usage:
+            history = chat.session.values.get("past_content", [])
+            snapshots.append(
+                {
+                    "messages": [m.sent + m.updated for m in chat.messages],
+                    "history": [item["content"] for item in history],
+                }
+            )
+
+    monkeypatch.setattr(app_stats, "record", note)
+    return snapshots
+
+
+def test_on_message_sends_the_too_large_notice_before_counting_it(
+    monkeypatch, chat, app_stats
+) -> None:
+    chat.session.values["max_tokens"] = 0
+    shown = shown_when_counted(monkeypatch, chat, app_stats, "message_too_large")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    assert [snapshot["messages"] for snapshot in shown] == [[[MESSAGE_TOO_LARGE]]]
+
+
+def test_on_message_shows_a_model_error_before_counting_it(
+    monkeypatch, chat, app_stats
+) -> None:
+    chat.create.side_effect = RuntimeError("not an SDK error")
+    shown = shown_when_counted(monkeypatch, chat, app_stats, "llm_errors")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    assert [snapshot["messages"] for snapshot in shown] == [[["", LLM_ERROR]]]
+
+
+def test_on_message_commits_an_answer_before_counting_it(
+    monkeypatch, chat, app_stats
+) -> None:
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Hello")
+    shown = shown_when_counted(monkeypatch, chat, app_stats, "responses")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (snapshot,) = shown
+    assert snapshot["messages"] == [["", "Hello"]]
+    assert snapshot["history"][-2:] == ["Hi", "Hello"]
+
+
+def test_on_message_counts_a_stopped_answer_as_a_message_without_a_response(
+    chat, app_stats
+) -> None:
+    async def stopped_stream():
+        async for chunk in response_chunks("partial"):
+            yield chunk
+        raise asyncio.CancelledError
+
+    chat.create.side_effect = None
+    chat.create.return_value = stopped_stream()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (counters,) = app_stats.read().values()
+    assert counters["messages"] == 1
+    assert "responses" not in counters
+    assert "llm_errors" not in counters
+
+
+def test_save_usage_does_not_let_an_unknown_metric_break_a_chat(app_stats) -> None:
+    asyncio.run(app.save_usage({"messages": 1, "mesages": 1}))
+
+    assert app_stats.read() == {}
