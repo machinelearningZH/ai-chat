@@ -99,3 +99,15 @@ boundaries; passing these tests is not evidence of complete production coverage.
 ## 2026-10-26: eMudhra/emSign certificate update
 
 Require certifi >=2026.10.19; only certifi and affected pip changed package versions. Keep the seven-day cooldown. Remove only the incident certifi exception after 2026-10-27 03:24:17 Europe/Zurich, then relock and sync. Build/CI uv pins are 0.13.5; Python image stages patch existing pip with secure uv. Deployment images still require a fresh build (`--pull --no-cache`) and verification before redeployment. Advisory: https://discuss.python.org/t/109576.
+
+## 2026-11-19: Usage statistics (0.4.0)
+
+- Counters are added when an event happens. Chainlit calls `on_chat_end` on every websocket disconnect and restores the session on reconnect, so the former `chat_session_analytics` log line counted chats several times.
+- Chat-level counts rely on the Chainlit session. It survives a reconnect within `session_timeout` (60 s in `.chainlit/config.toml`); after that, or after a restart, the next message counts as a new chat.
+- Failed approach: checking writability in `@cl.on_app_startup`. Chainlit 2.12.0 catches exceptions from that hook and only logs them, so the app kept running. The check runs at import of `ai_chat.app` instead.
+- Opening a read-only SQLite file and `CREATE TABLE IF NOT EXISTS` raise nothing; only a write does. `check_writable` therefore inserts a row and rolls back.
+- The `usage_stats` block in `config.yaml` is required on purpose, so that counting is a stated decision; `db_file: null` disables it. This is the breaking change of 0.4.0.
+- Hours are stored per day so that the report follows `--since` exactly; the finer granularity was accepted. Stats files that keep hours per month are converted on open, with the hours placed on the first day of the month. `_move_monthly_hours_to_days` can go once no such file is in use.
+- `tokens/second` divides by `response_stream_ms`, the time from the first answer token on. Data recorded before has no value for it, and the tokens of the first chunk are not timed.
+- `documents_skipped` also counts uploads without a path or outside the upload directory; the report labels all of them "too large".
+- Dependabot, checked 2026-11-19: the repository setting "Dependabot security updates" is disabled and no `.github/dependabot.yml` exists. The two pull requests of 2026-02-11 were security updates.
