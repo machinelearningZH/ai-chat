@@ -99,20 +99,6 @@ _READ_MESSAGE_HOURS = """
 """
 
 
-def _move_monthly_hours_to_days(connection: sqlite3.Connection) -> None:
-    """Carry over the hours of a stats file that still keeps them per month.
-
-    The day within the month is not known, so they count for its first day. This
-    can go once no stats file from before the change is in use.
-    """
-    columns = connection.execute("PRAGMA table_info(message_hours)").fetchall()
-    if "month" in (name for _, name, *_ in columns):
-        connection.execute("BEGIN")
-        connection.execute("ALTER TABLE message_hours RENAME COLUMN month TO day")
-        connection.execute("UPDATE message_hours SET day = day || '-01'")
-        connection.commit()
-
-
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -134,7 +120,6 @@ class UsageStats:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         self._db_file.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self._db_file)) as connection, connection:
-            _move_monthly_hours_to_days(connection)
             connection.executescript(_CREATE_TABLES)
             yield connection
 

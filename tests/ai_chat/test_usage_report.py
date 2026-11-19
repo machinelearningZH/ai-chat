@@ -353,9 +353,9 @@ def test_format_bar_chart_handles_missing_data() -> None:
 
 
 def test_main_shows_the_overview_in_the_stats_time_zone(
-    stats, monkeypatch, capsys
+    seeded_stats, monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: stats)
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
 
     usage_report.main([])
 
@@ -368,8 +368,8 @@ def test_main_shows_the_overview_in_the_stats_time_zone(
     assert "peak Thu (57%)" in overview
 
 
-def test_main_applies_options(stats, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: stats)
+def test_main_applies_options(seeded_stats, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
 
     usage_report.main(["--since", "2026-10-20", "--by", "day", "--detailed"])
 

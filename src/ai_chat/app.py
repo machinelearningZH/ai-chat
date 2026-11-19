@@ -206,7 +206,9 @@ def count_chat_length(usage: Counter[str]) -> None:
 async def save_usage(usage: Mapping[str, int]) -> None:
     """Write the counters in one transaction, off the event loop.
 
-    A locked stats file would otherwise stall every chat for seconds. A wrong
+    A locked stats file would otherwise stall every chat for seconds. It still
+    holds up the chat that waits for the write, so an outcome is shown to the
+    user, and an answer is kept in the history, before it is counted. A wrong
     metric name is a mistake in this module and must not break a chat either.
     """
     try:
@@ -483,8 +485,8 @@ async def on_message(message: cl.Message) -> None:
 
     if not context_window.current_message_fits:
         usage["message_too_large"] += 1
-        await save_usage(usage)
         await cl.Message(content=MESSAGE_TOO_LARGE).send()
+        await save_usage(usage)
         return
 
     # The message is counted now: its answer can take minutes, fail or be stopped.
@@ -527,30 +529,30 @@ async def on_message(message: cl.Message) -> None:
                 await msg.stream_token(token)
     except OpenAIError:
         logger.exception("llm_request_failed")
-        await save_usage({"llm_errors": 1})
         msg.content = LLM_ERROR
         await msg.update()
+        await save_usage({"llm_errors": 1})
         return
     except Exception:
         logger.exception("unexpected_llm_request_failed")
-        await save_usage({"llm_errors": 1})
         msg.content = LLM_ERROR
         await msg.update()
+        await save_usage({"llm_errors": 1})
         return
 
+    response_ms = elapsed_ms(started)
+    response_stream_ms = elapsed_ms(stream_started) if stream_started is not None else 0
     response_tokens = await asyncio.to_thread(count_tokens, msg.content)
-    await save_usage(
-        {
-            "responses": 1,
-            "response_ms": elapsed_ms(started),
-            "response_stream_ms": (
-                elapsed_ms(stream_started) if stream_started is not None else 0
-            ),
-            "response_tokens": response_tokens,
-        }
-    )
     past_content.append({"role": "assistant", "content": msg.content})
     past_content_token_counts.append(response_tokens)
     cl.user_session.set("past_content", past_content)
     cl.user_session.set("past_content_token_counts", past_content_token_counts)
     await msg.update()
+    await save_usage(
+        {
+            "responses": 1,
+            "response_ms": response_ms,
+            "response_stream_ms": response_stream_ms,
+            "response_tokens": response_tokens,
+        }
+    )

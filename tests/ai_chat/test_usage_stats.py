@@ -1,6 +1,4 @@
 import os
-import sqlite3
-from contextlib import closing
 from datetime import date
 
 import pytest
@@ -9,10 +7,10 @@ from ai_chat.config import ConfigError
 from ai_chat.usage_stats import UsageStats, file_type_metric
 
 
-def test_record_sums_counters_per_day(stats) -> None:
-    stats.record({"messages": 1, "uploaded_bytes": 2048})
+def test_record_sums_counters_per_day(seeded_stats) -> None:
+    seeded_stats.record({"messages": 1, "uploaded_bytes": 2048})
 
-    assert stats.read(by="day") == {
+    assert seeded_stats.read(by="day") == {
         "2026-10-03": {"messages": 1},
         "2026-10-20": {"messages": 2},
         "2026-11-05": {"messages": 5, "uploaded_bytes": 2048},
@@ -31,48 +29,29 @@ def test_record_leaves_out_counters_of_zero(tmp_path) -> None:
     assert all("documents_failed" not in counters for counters in stats.read().values())
 
 
-def test_read_sums_days_into_months(stats) -> None:
-    assert stats.read(by="month") == {
+def test_read_sums_days_into_months(seeded_stats) -> None:
+    assert seeded_stats.read(by="month") == {
         "2026-10": {"messages": 3},
         "2026-11": {"messages": 4},
     }
 
 
-def test_read_ignores_days_before_since(stats) -> None:
-    assert stats.read(by="month", since="2026-10-20") == {
+def test_read_ignores_days_before_since(seeded_stats) -> None:
+    assert seeded_stats.read(by="month", since="2026-10-20") == {
         "2026-10": {"messages": 2},
         "2026-11": {"messages": 4},
     }
 
 
-def test_record_adds_messages_to_the_hour_of_day_profile(stats) -> None:
-    stats.record({"chats": 1})
+def test_record_adds_messages_to_the_hour_of_day_profile(seeded_stats) -> None:
+    seeded_stats.record({"chats": 1})
 
-    assert stats.read_message_hours() == {9: 3, 14: 4}
-
-
-def test_read_message_hours_ignores_days_before_since(stats) -> None:
-    assert stats.read_message_hours(since="2026-10-20") == {9: 2, 14: 4}
-    assert stats.read_message_hours(since="2026-10-21") == {14: 4}
+    assert seeded_stats.read_message_hours() == {9: 3, 14: 4}
 
 
-def test_hours_stored_per_month_move_to_the_first_day_of_their_month(
-    tmp_path, set_clock
-) -> None:
-    db_file = tmp_path / "usage.sqlite"
-    with closing(sqlite3.connect(db_file)) as connection, connection:
-        connection.execute(
-            "CREATE TABLE message_hours (month TEXT NOT NULL, hour INTEGER NOT NULL,"
-            " messages INTEGER NOT NULL, PRIMARY KEY (month, hour))"
-        )
-        connection.execute("INSERT INTO message_hours VALUES ('2026-10', 9, 3)")
-    stats = UsageStats(db_file)
-    set_clock(2026, 10, 1, 9, 0)
-
-    stats.record({"messages": 2})
-
-    assert stats.read_message_hours(since="2026-10-01") == {9: 5}
-    assert stats.read_message_hours(since="2026-10-02") == {}
+def test_read_message_hours_ignores_days_before_since(seeded_stats) -> None:
+    assert seeded_stats.read_message_hours(since="2026-10-20") == {9: 2, 14: 4}
+    assert seeded_stats.read_message_hours(since="2026-10-21") == {14: 4}
 
 
 def test_record_uses_the_configured_time_zone(tmp_path, set_clock) -> None:
