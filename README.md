@@ -174,6 +174,7 @@ Add `UP_FLAGS=-d` to run a Compose scenario in the background:
 make stack-cpu UP_FLAGS=-d
 make model MODEL=hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k
 make logs
+make stats
 make down
 ```
 
@@ -229,9 +230,32 @@ Open <http://localhost:8000>. The `ollama` value is a non-secret dummy key for t
 
 In the full Compose stack, the app connects to `http://ollama:11434/v1` over the private Compose network; Ollama's API is not published to the host. For `make app-host` on native Linux, Ollama must listen on an address reachable from Docker, not only on `127.0.0.1`. Do not expose Ollama beyond trusted interfaces.
 
-Uploaded files and logs are ephemeral by default. If persistence is required, add narrowly scoped volume mounts for `/app/.files` or the configured log path.
+Uploaded files and logs are ephemeral by default. If persistence is required, add narrowly scoped volume mounts for `/app/.files` or the configured log path. Usage statistics persist in the `usage-stats` Compose volume; for a direct `docker run`, mount a volume at `/app/stats` to keep them. The app user (uid 10001) must be able to write there: with usage statistics enabled, the app refuses to start if it cannot write the file.
 
 The Linux image uses CPU-only PyTorch wheels because document conversion does not require GPU acceleration. BuildKit keeps uv's download cache outside the runtime image. On the tested platform, the image is about 2.2 GB unpacked and 500 MB compressed; sizes vary by platform.
+
+## Usage Statistics
+
+The app does not log chat content, file names, or user identifiers. It only adds to anonymous counters per day, and for messages per day and hour, in a local SQLite file (`usage_stats.db_file` in `config.yaml`; set it to `null` to disable):
+
+- chats, and how many had a follow-up message, reached 6, 11, or 21 messages, used documents, or used thinking mode
+- messages, and how many used documents or thinking mode, plus their token total
+- answers generated, their token total, their total duration, and the part of that duration spent streaming the answer text
+- documents processed, failed, and skipped, their token total, uploaded bytes, total import time, and file types from a fixed list
+- trimmed histories, oversized messages, and model errors
+- messages per day and hour of day
+
+```bash
+make stats                          # one-screen overview, one column per month
+make stats-detailed                 # every counter, including each file type
+make stats SINCE=2026-11-01 BY=day  # one column per day since a date
+```
+
+`make stats-detailed` lists every counter as a table row with exact totals, followed by full bar charts for the hours and weekdays. `tokens/second` is the generation speed from the first answer token on; the wait before it, which includes thinking, is listed as `until first token`.
+
+`make stats` reads the counters of the Compose app while it is running, and otherwise those of the native app. The first output line names the source.
+
+Days and hours follow `usage_stats.timezone` in `config.yaml`, not the server clock, which is UTC inside the container. If a counter cannot be written while the app runs, the chat continues and the error goes to the log file and to stderr. With very few users, daily counts, and even more so the messages per day and hour, can relate to a person; check this against your data protection requirements.
 
 ## Project Team
 

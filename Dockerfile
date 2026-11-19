@@ -22,8 +22,8 @@ COPY --chown=10001:10001 _tiktoken_cache _tiktoken_cache
 COPY --chown=10001:10001 chainlit.md config.yaml ./
 COPY --chown=10001:10001 src src
 
-RUN mkdir -p .files \
-    && chown 10001:10001 /app .files
+RUN mkdir -p .files stats \
+    && chown 10001:10001 /app .files stats
 
 USER 10001:10001
 

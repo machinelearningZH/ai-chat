@@ -13,11 +13,13 @@ APP_MODEL_NAME ?= $(CONFIG_MODEL_NAME)
 SERVER_HOST ?= 127.0.0.1
 VLLM_PORT ?= 8001
 LLAMACPP_PORT ?= 8002
+STATS_ARGS = $(if $(SINCE),--since "$(SINCE)") $(if $(BY),--by "$(BY)")
 
 export OLLAMA_VERSION
 
 .PHONY: help setup run-native run-vllm run-llamacpp serve-vllm serve-llamacpp \
-	build app-host stack-cpu stack-nvidia stack-amd down logs ps model
+	build app-host stack-cpu stack-nvidia stack-amd down logs ps model stats \
+	stats-detailed
 
 help: ## Show the available commands.
 	@printf '%s\n' \
@@ -35,9 +37,12 @@ help: ## Show the available commands.
 		'make model MODEL=…  Pull a model into Compose Ollama (starts it if needed)' \
 		'make logs           Follow Compose logs' \
 		'make ps             Show Compose service status' \
+		'make stats          Show the usage statistics overview' \
+		'make stats-detailed Show every usage counter' \
 		'make down           Stop the Compose stack' \
 		'' \
 		'Add UP_FLAGS=-d to a Compose start target to run in the background.' \
+		'Add SINCE=YYYY-MM-DD or BY=day to a stats target to narrow the report.' \
 		'Compose context length follows config.yaml; override with OLLAMA_CONTEXT_LENGTH=…'
 
 setup: ## Install the locked Python environment.
@@ -90,6 +95,18 @@ logs: ## Follow Compose logs.
 
 ps: ## Show Compose service status.
 	$(COMPOSE) ps
+
+stats: ## Show usage statistics of the running Compose app, else of the native app.
+	@if [ -n "$$($(COMPOSE) ps --quiet app 2>/dev/null)" ]; then \
+		echo 'Source: Compose app'; \
+		$(COMPOSE) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+	else \
+		echo 'Source: native app (no Compose app is running)'; \
+		PYTHONPATH=src uv run python -m ai_chat.usage_report $(STATS_ARGS); \
+	fi
+
+stats-detailed: STATS_ARGS += --detailed
+stats-detailed: stats ## Show every usage counter instead of the overview.
 
 down: ## Stop the Compose stack without deleting models.
 	$(COMPOSE) down

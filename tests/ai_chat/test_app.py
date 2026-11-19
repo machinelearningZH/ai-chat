@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -17,8 +18,10 @@ from ai_chat.messages import (
     DOCUMENT_LIMIT_WARNING,
     DOCUMENT_PARTIAL_SUCCESS,
     DOCUMENT_SUCCESS,
+    LLM_ERROR,
     MESSAGE_TOO_LARGE,
 )
+from ai_chat.usage_stats import UsageStats
 
 
 class FakeMessage:
@@ -34,6 +37,9 @@ class FakeMessage:
     async def update(self) -> None:
         return None
 
+    async def stream_token(self, token: str) -> None:
+        self.content += token
+
 
 class FakeSession:
     def __init__(self, values: dict | None = None) -> None:
@@ -44,6 +50,27 @@ class FakeSession:
 
     def set(self, key: str, value) -> None:
         self.values[key] = value
+
+
+@pytest.fixture(autouse=True)
+def stats(tmp_path, monkeypatch) -> UsageStats:
+    """Point the app at a throwaway stats file instead of the configured one.
+
+    This applies to every test here, so that none can write to the real file.
+    """
+    stats = UsageStats(tmp_path / "usage.sqlite")
+    monkeypatch.setattr(app, "stats", stats)
+    return stats
+
+
+async def answer(**_kwargs):
+    """Stand in for the model server and stream the answer "answer"."""
+
+    async def stream():
+        delta = SimpleNamespace(content="answer")
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+    return stream()
 
 
 def test_calculate_input_token_limit_reserves_output_and_estimation_buffer() -> None:
@@ -197,6 +224,7 @@ def test_process_attachments_reports_per_file_success(tmp_path, monkeypatch) -> 
     assert result.skipped_count == 0
     assert result.file_types == [".txt"]
     assert len(result.token_counts) == 1
+    assert result.uploaded_bytes == len("useful document")
     assert "useful document" in result.prompt_content
     assert FakeMessage.instances[0].content == DOCUMENT_SUCCESS
     assert not upload.exists()
@@ -259,7 +287,7 @@ def test_process_attachments_skips_document_over_budget(tmp_path, monkeypatch) -
 
 
 def test_on_message_stops_before_llm_when_current_message_is_too_large(
-    monkeypatch,
+    monkeypatch, stats
 ) -> None:
     session = FakeSession(
         {
@@ -275,6 +303,172 @@ def test_on_message_stops_before_llm_when_current_message_is_too_large(
     asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
 
     assert [message.content for message in FakeMessage.instances] == [MESSAGE_TOO_LARGE]
-    assert session.values["analytics"]["user_message_count"] == 1
-    assert session.values["analytics"]["user_total_tokens"] > 0
     assert session.values["past_content"] == [{"role": "system", "content": "system"}]
+    (counters,) = stats.read().values()
+    assert counters["messages"] == 1
+    assert counters["message_tokens"] > 0
+    assert counters["message_too_large"] == 1
+    assert "chats_with_follow_up" not in counters
+
+
+def test_on_message_counts_each_chat_once(monkeypatch, stats) -> None:
+    session = FakeSession({"max_tokens": 0, "thinking": True})
+    monkeypatch.setattr(app.cl, "user_session", session)
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    for _ in range(3):
+        asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    (counters,) = stats.read().values()
+    assert counters["messages"] == 3
+    assert counters["messages_with_thinking"] == 3
+    assert counters["chats"] == 1
+    assert counters["chats_with_follow_up"] == 1
+    assert counters["chats_with_thinking"] == 1
+    assert "chats_with_documents" not in counters
+
+
+def test_on_message_counts_when_a_chat_reaches_a_length(monkeypatch, stats) -> None:
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+    for messages in (1, 11):
+        monkeypatch.setattr(app.cl, "user_session", FakeSession({"max_tokens": 0}))
+        for _ in range(messages):
+            asyncio.run(
+                app.on_message(SimpleNamespace(content="question", elements=[]))
+            )
+
+    (counters,) = stats.read().values()
+    assert counters["messages"] == 12
+    assert counters["chats"] == 2
+    assert counters["chats_with_follow_up"] == 1
+    assert counters["chats_with_6_messages"] == 1
+    assert counters["chats_with_11_messages"] == 1
+    assert "chats_with_21_messages" not in counters
+
+
+def test_on_message_counts_uploaded_documents(tmp_path, monkeypatch, stats) -> None:
+    upload = tmp_path / "large.txt"
+    upload.write_text("content", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    monkeypatch.setattr(app.cl, "user_session", FakeSession({"max_tokens": 0}))
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="question",
+                elements=[SimpleNamespace(path=str(upload), name="large.txt")],
+            )
+        )
+    )
+
+    (counters,) = stats.read().values()
+    assert counters["messages_with_documents"] == 1
+    assert counters["chats_with_documents"] == 1
+    assert counters["documents_skipped"] == 1
+    assert counters["uploaded_bytes"] == len("content")
+    assert counters["document_ms"] == 1500
+    assert "documents_processed" not in counters
+
+
+def test_on_message_counts_and_times_successful_responses(monkeypatch, stats) -> None:
+    async def fake_create(**_kwargs):
+        async def stream():
+            delta = SimpleNamespace(content="answer")
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+        return stream()
+
+    session = FakeSession()
+    monkeypatch.setattr(app.local_client.chat.completions, "create", fake_create)
+    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    monkeypatch.setattr(app.cl, "user_session", session)
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    assert session.values["past_content"][-1] == {
+        "role": "assistant",
+        "content": "answer",
+    }
+    (counters,) = stats.read().values()
+    assert counters["responses"] == 1
+    assert counters["response_ms"] == 1500
+    assert counters["response_stream_ms"] == 1500
+    assert counters["response_tokens"] == app.count_tokens("answer")
+    assert "llm_errors" not in counters
+
+
+def test_on_message_counts_trimmed_history(monkeypatch, stats) -> None:
+    session = FakeSession(
+        {
+            "past_content": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+            "past_content_token_counts": [1, 50, 50],
+            "max_tokens": 60,
+        }
+    )
+    monkeypatch.setattr(app.local_client.chat.completions, "create", answer)
+    monkeypatch.setattr(app.cl, "user_session", session)
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    (counters,) = stats.read().values()
+    assert counters["history_trimmed"] == 1
+    assert counters["responses"] == 1
+    assert "message_too_large" not in counters
+
+
+@pytest.mark.parametrize(
+    "error", [app.OpenAIError("model server down"), RuntimeError("unexpected")]
+)
+def test_on_message_counts_model_errors(monkeypatch, stats, error: Exception) -> None:
+    async def fail(**_kwargs):
+        raise error
+
+    FakeMessage.instances.clear()
+    monkeypatch.setattr(app.local_client.chat.completions, "create", fail)
+    monkeypatch.setattr(app.cl, "user_session", FakeSession())
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    assert FakeMessage.instances[-1].content == LLM_ERROR
+    (counters,) = stats.read().values()
+    assert counters["messages"] == 1
+    assert counters["llm_errors"] == 1
+    assert "responses" not in counters
+
+
+def test_on_message_writes_its_counters_in_two_batches_off_the_event_loop(
+    monkeypatch, stats
+) -> None:
+    batches: list[tuple[set[str], threading.Thread]] = []
+    record = stats.record
+
+    def record_and_note(usage) -> None:
+        batches.append((set(usage), threading.current_thread()))
+        record(usage)
+
+    monkeypatch.setattr(stats, "record", record_and_note)
+    monkeypatch.setattr(app.local_client.chat.completions, "create", answer)
+    monkeypatch.setattr(app.cl, "user_session", FakeSession())
+    monkeypatch.setattr(app.cl, "Message", FakeMessage)
+
+    asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
+
+    (message, message_thread), (response, response_thread) = batches
+    assert {"chats", "messages", "message_tokens"} <= message
+    assert {"responses", "response_ms", "response_tokens"} <= response
+    assert threading.main_thread() not in (message_thread, response_thread)
+
+
+def test_save_usage_does_not_let_an_unknown_metric_break_a_chat(stats) -> None:
+    asyncio.run(app.save_usage({"messages": 1, "mesages": 1}))
+
+    assert stats.read() == {}
