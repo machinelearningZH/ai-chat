@@ -259,7 +259,7 @@ Days and hours follow `usage_stats.timezone` in `config.yaml`, not the server cl
 
 ## Project Team
 
-**Chantal Amrhein**, **Patrick Arnecke** – [Amt für Statistik und Daten Kanton Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten.html)
+**Chantal Amrhein**, **Patrick Arnecke**, **Jonas Egloff**, **Jean Kesselring** – [Amt für Statistik und Daten Kanton Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten.html)
 
 ## Feedback and Contributing
 
