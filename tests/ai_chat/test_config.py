@@ -153,7 +153,9 @@ def test_default_model_context_length_uses_default_selection() -> None:
         }
     )
 
-    assert default_model_context_length(config) == 4096
+    config["model"]["default_selection"] = "larger-model"
+
+    assert default_model_context_length(config) == 8192
 
 
 def test_resolve_openai_api_key_prefers_environment(
@@ -269,3 +271,80 @@ def test_json_formatter_includes_exception_details() -> None:
     payload = json.loads(formatter.format(record))
 
     assert "RuntimeError: sensitive operation failed" in payload["exception"]
+
+
+@pytest.mark.parametrize("remaining_input", [0, 1])
+def test_validate_config_context_boundary(remaining_input: int) -> None:
+    config = make_config()
+    config["model"]["models"][0]["max_tokens_context"] = 1280 + remaining_input
+    if remaining_input:
+        validate_config(config)
+    else:
+        with pytest.raises(ConfigError, match="must be smaller"):
+            validate_config(config)
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "4096", None])
+@pytest.mark.parametrize("key", ["max_tokens_context", "max_tokens_output"])
+def test_validate_config_rejects_invalid_token_limits(key, value) -> None:
+    config = make_config()
+    config["model"]["models"][0][key] = value
+    with pytest.raises(ConfigError, match=f"{key} must be a positive integer"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000/v1", "http://[::1]:8000/v1"])
+def test_resolve_openai_api_key_accepts_loopback_addresses(monkeypatch, url) -> None:
+    config = make_config()["openai"]
+    config["base_url"] = url
+    monkeypatch.delenv("AI_CHAT_API_KEY", raising=False)
+    assert resolve_openai_api_key(config) == "ollama"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://localhost.example.test/v1",
+        "https://localhost@api.example.test/v1",
+        "http://ollama:11434/v1",
+    ],
+)
+def test_resolve_openai_api_key_does_not_treat_other_hosts_as_loopback(
+    monkeypatch, url
+) -> None:
+    config = make_config()["openai"]
+    config["base_url"] = url
+    monkeypatch.delenv("AI_CHAT_API_KEY", raising=False)
+    with pytest.raises(ConfigError, match="AI_CHAT_API_KEY"):
+        resolve_openai_api_key(config)
+
+
+def test_load_config_applies_override_before_validation_and_caches(
+    config_file, monkeypatch
+) -> None:
+    import yaml
+
+    from ai_chat.config import load_config
+
+    settings = make_config()
+    settings["openai"]["base_url"] = "https://api.example.test/v1"
+    config_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    monkeypatch.delenv("AI_CHAT_API_KEY", raising=False)
+    monkeypatch.setenv("AI_CHAT_BASE_URL", "  http://127.0.0.1:8001/v1  ")
+    loaded = load_config()
+    assert loaded["openai"]["base_url"] == "http://127.0.0.1:8001/v1"
+    assert loaded["model"]["default_selection"] == "local-model"
+    config_file.unlink()
+    assert load_config() == loaded
+
+
+def test_load_config_can_retry_after_invalid_configuration(config_file) -> None:
+    import yaml
+
+    from ai_chat.config import load_config
+
+    config_file.write_text("[]", encoding="utf-8")
+    with pytest.raises(ConfigError, match="must contain a mapping"):
+        load_config()
+    config_file.write_text(yaml.safe_dump(make_config()), encoding="utf-8")
+    assert load_config()["model"]["default_selection"] == "local-model"

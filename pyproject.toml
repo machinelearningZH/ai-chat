@@ -38,3 +38,8 @@ torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+filterwarnings = [
+    "error::RuntimeWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]

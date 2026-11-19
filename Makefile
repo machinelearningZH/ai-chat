@@ -17,13 +17,17 @@ STATS_ARGS = $(if $(SINCE),--since "$(SINCE)") $(if $(BY),--by "$(BY)")
 
 export OLLAMA_VERSION
 
-.PHONY: help setup run-native run-vllm run-llamacpp serve-vllm serve-llamacpp \
+.PHONY: help setup test lint format check run-native run-vllm run-llamacpp serve-vllm serve-llamacpp \
 	build app-host stack-cpu stack-nvidia stack-amd down logs ps model stats \
 	stats-detailed
 
 help: ## Show the available commands.
 	@printf '%s\n' \
 		'make setup          Install the locked Python environment' \
+		'make test           Run the test suite' \
+		'make lint           Run the Ruff linter' \
+		'make format         Format code with Ruff' \
+		'make check          Run formatting check, linter, and tests' \
 		'make run-native     Run the app locally with native Ollama' \
 		'make serve-vllm MODEL=…       Serve a Hugging Face model with vLLM' \
 		'make run-vllm                 Run the app against vLLM on port 8001' \
@@ -47,6 +51,20 @@ help: ## Show the available commands.
 
 setup: ## Install the locked Python environment.
 	uv sync
+
+test: ## Run the test suite.
+	uv run pytest
+
+lint: ## Run the Ruff linter.
+	uv run ruff check .
+
+format: ## Format code with Ruff.
+	uv run ruff format .
+
+check: ## Run formatting check, linter, and tests.
+	uv run ruff format --check .
+	uv run ruff check .
+	uv run pytest
 
 run-native: ## Run the app locally with Ollama on localhost.
 	AI_CHAT_BASE_URL=http://localhost:11434/v1 uv run chainlit run src/app.py
