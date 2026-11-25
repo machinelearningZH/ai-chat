@@ -28,7 +28,7 @@ not access the normal uv cache. Python was 3.13.15; CI pins 3.13.14.
 | YAML startup loading (loader docstring, README overrides) | Helpers only | Real YAML, override before validation, cache after success, retry after rejected config |
 | Preserve system/current messages and trim complete old turns (helper docstring, UI warning) | One removed turn | Multiple turns, exact fit, newest-turn retention, aligned counts, unchanged caller history |
 | Streaming chat (README chat feature; OpenAI-compatible request boundary) | Oversize rejection only | SDK chunk objects, metadata/empty chunks, ordered output, selected request settings, optional reasoning field, complete history and token counts |
-| Failed model response (configured error copy) | None | Creation and mid-stream errors, visible error, unchanged history, analytics and subsequent successful request |
+| Failed model response (configured error copy) | None | Creation and mid-stream errors, visible error, unchanged history, usage counters and subsequent successful request |
 | Model setting changes (README configurable models) | Name allowlist only | Different model budgets/sampling and unknown-selection fallback |
 | Uploaded documents (README feature, status/warning copy) | Text success/error and single over-budget file | Real two-page PDF, malformed/empty PDFs, symlink escape, cumulative budget, skipped-file budget preservation and deletion |
 | Awaited UI effects | No-op send/update methods | Per-test fake records awaited sends, streamed tokens and updates; explicit no-model-call assertion for oversized input |
@@ -99,3 +99,16 @@ boundaries; passing these tests is not evidence of complete production coverage.
 ## 2026-10-26: eMudhra/emSign certificate update
 
 Require certifi >=2026.10.19; only certifi and affected pip changed package versions. Keep the seven-day cooldown. Remove only the incident certifi exception after 2026-10-27 03:24:17 Europe/Zurich, then relock and sync. Build/CI uv pins are 0.13.5; Python image stages patch existing pip with secure uv. Deployment images still require a fresh build (`--pull --no-cache`) and verification before redeployment. Advisory: https://discuss.python.org/t/109576.
+
+## 2026-11-19: Usage statistics (0.4.0)
+
+- Counters are added when an event happens. Chainlit calls `on_chat_end` on every websocket disconnect and restores the session on reconnect, so the former `chat_session_analytics` log line counted chats several times.
+- Chat-level counts rely on the Chainlit session. It survives a reconnect within `session_timeout` (60 s in `.chainlit/config.toml`); after that, or after a restart, the next message counts as a new chat.
+- Failed approach: checking writability in `@cl.on_app_startup`. Chainlit 2.12.0 catches exceptions from that hook and only logs them, so the app kept running. The check runs at import of `ai_chat.app` instead.
+- Opening a read-only SQLite file and `CREATE TABLE IF NOT EXISTS` raise nothing; only a write does. `check_writable` therefore inserts a row and rolls back.
+- The `usage_stats` block in `config.yaml` is required on purpose, so that counting is a stated decision; `db_file: null` disables it. This is the breaking change of 0.4.0.
+- Hours are stored per day so that the report follows `--since` exactly; the finer granularity was accepted. The earlier layout with hours per month was never committed, so there is no migration from it.
+- Counters are written after the outcome is shown and a finished answer is in the history, because a locked stats file holds a write up for seconds. Only the counters of the message itself are written before the model request, so that a stopped or failed answer still counts as a message.
+- `tests/ai_chat/conftest.py` imports application modules inside its fixtures. Given a path (`uv run pytest tests/ai_chat`), pytest loads that file before `tests/conftest.py` has built its sandbox; a top-level import of `ai_chat.usage_stats` then read the real `config.yaml` and `.env` and made collection fail on a blocked tokenizer download.
+- `tokens/second` divides by `response_stream_ms`, the time from the first answer token on. Data recorded before has no value for it, and the tokens of the first chunk are not timed.
+- `documents_skipped` also counts uploads without a path or outside the upload directory; the report labels all of them "too large".

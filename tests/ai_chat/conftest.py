@@ -1,7 +1,20 @@
+"""Fixtures shared by the application tests.
+
+Application modules are imported inside the fixtures, not here: given a path,
+pytest loads this file before tests/conftest.py has set up its sandbox, and
+importing ai_chat.app or ai_chat.usage_stats reads the configuration.
+"""
+
+from collections.abc import Callable
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from ai_chat.usage_stats import UsageStats
 
 
 class FakeSession:
@@ -51,3 +64,31 @@ def chat(monkeypatch):
         ),
     )
     return SimpleNamespace(messages=messages, session=session, create=create)
+
+
+@pytest.fixture
+def set_clock(monkeypatch) -> Callable[..., None]:
+    """Return a function that freezes the stats clock at a UTC date and time."""
+    from ai_chat import usage_stats
+
+    def freeze(*moment: int) -> None:
+        frozen = datetime(*moment, tzinfo=UTC)
+        monkeypatch.setattr(usage_stats, "utc_now", lambda: frozen)
+
+    return freeze
+
+
+@pytest.fixture
+def seeded_stats(tmp_path, set_clock) -> "UsageStats":
+    """Return stats with messages on two October days and one November day."""
+    from ai_chat.usage_stats import UsageStats
+
+    stats = UsageStats(tmp_path / "stats" / "usage.sqlite")
+    for moment, messages in [
+        ((2026, 10, 3, 9, 15), 1),
+        ((2026, 10, 20, 9, 45), 2),
+        ((2026, 11, 5, 14, 0), 4),
+    ]:
+        set_clock(*moment)
+        stats.record({"messages": messages})
+    return stats

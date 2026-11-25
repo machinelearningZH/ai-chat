@@ -32,6 +32,14 @@ logging:
   log_file: "chainlit_logs.log"
   log_level: "INFO"
 
+# Anonymous usage statistics: counters per day, and messages per day and hour.
+# No content or identifiers.
+# Read them with `make stats`. Set db_file to null to disable.
+# The time zone decides where a day ends and which hour a message counts for.
+usage_stats:
+  db_file: "stats/usage_stats.sqlite"
+  timezone: "Europe/Zurich"
+
 # Decrease the input allowance by this value to account for prompt overhead and
 # imprecise token counting. The configured output allowance is reserved separately.
 # We use tiktokens default encoding for estimation, which might differ from the actual model encoding.

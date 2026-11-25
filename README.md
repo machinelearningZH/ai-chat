@@ -174,6 +174,7 @@ Add `UP_FLAGS=-d` to run a Compose scenario in the background:
 make stack-cpu UP_FLAGS=-d
 make model MODEL=hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k
 make logs
+make stats
 make down
 ```
 
@@ -229,13 +230,24 @@ Open <http://localhost:8000>. The `ollama` value is a non-secret dummy key for t
 
 In the full Compose stack, the app connects to `http://ollama:11434/v1` over the private Compose network; Ollama's API is not published to the host. For `make app-host` on native Linux, Ollama must listen on an address reachable from Docker, not only on `127.0.0.1`. Do not expose Ollama beyond trusted interfaces.
 
-Uploaded files and logs are ephemeral by default. If persistence is required, add narrowly scoped volume mounts for `/app/.files` or the configured log path.
+Uploaded files and logs are ephemeral by default. If persistence is required, add narrowly scoped volume mounts for `/app/.files` or the configured log path. Usage statistics persist in the `usage-stats` Compose volume; for a direct `docker run`, mount a volume at `/app/stats` to keep them. The app user (uid 10001) must be able to write there: with usage statistics enabled, the app refuses to start if it cannot write the file.
 
 The Linux image uses CPU-only PyTorch wheels because document conversion does not require GPU acceleration. BuildKit keeps uv's download cache outside the runtime image. On the tested platform, the image is about 2.2 GB unpacked and 500 MB compressed; sizes vary by platform.
 
+## Usage Statistics
+
+The app keeps anonymous, aggregate usage counters in a local SQLite file: no chat content, file names, or user identifiers.
+
+```bash
+make stats             # overview
+make stats DETAILED=1  # every counter
+```
+
+To turn the counters off, set `usage_stats.db_file` to `null` in `config.yaml`.
+
 ## Project Team
 
-**Chantal Amrhein**, **Patrick Arnecke** – [Amt für Statistik und Daten Kanton Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten.html)
+**Chantal Amrhein**, **Patrick Arnecke**, **Jonas Egloff**, **Jean Kesselring** – [Amt für Statistik und Daten Kanton Zürich: Team Data](https://www.zh.ch/de/direktion-der-justiz-und-des-innern/amt-fuer-statistik-und-daten.html)
 
 ## Feedback and Contributing
 

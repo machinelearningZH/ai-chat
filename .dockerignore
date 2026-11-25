@@ -5,6 +5,7 @@
 .env.*
 !.env.example
 .files/
+stats/
 .pytest_cache/
 .ruff_cache/
 .venv/

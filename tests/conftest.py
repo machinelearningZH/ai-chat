@@ -23,6 +23,7 @@ def pytest_configure(config: pytest.Config) -> None:
     settings = yaml.safe_load((original_root / "config.yaml").read_text())
     settings["runtime"]["tiktoken_cache_dir"] = str(original_root / "_tiktoken_cache")
     settings["logging"]["log_file"] = str(root / "test.log")
+    settings["usage_stats"]["db_file"] = str(root / "stats" / "usage_stats.sqlite")
     (root / "config.yaml").write_text(yaml.safe_dump(settings), encoding="utf-8")
     (root / ".chainlit").mkdir()
     (root / ".chainlit" / "config.toml").write_text(

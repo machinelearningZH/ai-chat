@@ -1,6 +1,8 @@
 import asyncio
 import os
+import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import local
@@ -12,7 +14,6 @@ from chainlit.input_widget import Select, Switch
 from openai import AsyncOpenAI, OpenAIError
 
 from ai_chat.config import (
-    ANALYTICS_LEVEL,
     PROJECT_ROOT,
     get_custom_logger,
     load_config,
@@ -34,9 +35,18 @@ from ai_chat.messages import (
     SYSTEM_PROMPT,
     WELCOME,
 )
+from ai_chat.usage_stats import (
+    CHAT_LENGTH_METRICS,
+    file_type_metric,
+    load_usage_stats,
+)
 
 logger = get_custom_logger()
 config = load_config()
+stats = load_usage_stats()
+# Chainlit logs an error in a startup hook and carries on, so the check runs at
+# import: the app must not start if enabled usage statistics cannot be written.
+stats.check_writable()
 runtime_config = config["runtime"]
 
 cache_dir = Path(runtime_config["tiktoken_cache_dir"])
@@ -89,6 +99,7 @@ class AttachmentProcessingResult:
     skipped_count: int
     file_types: list[str]
     token_counts: list[int]
+    uploaded_bytes: int
 
 
 def count_tokens(text: str) -> int:
@@ -171,17 +182,39 @@ def build_context_window(
     )
 
 
-def default_analytics() -> dict:
-    return {
-        "user_message_count": 0,
-        "user_total_tokens": 0,
-        "user_token_count": [],
-        "attached_doc_count": 0,
-        "attached_doc_types": [],
-        "attached_doc_token_count": [],
-        "failed_doc_count": 0,
-        "skipped_doc_count": 0,
-    }
+def elapsed_ms(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
+def count_once_per_chat(usage: Counter[str], metric: str) -> None:
+    """Count a chat-level metric the first time it applies."""
+    counted = cl.user_session.get("counted_chat_metrics") or set()
+    if metric not in counted:
+        cl.user_session.set("counted_chat_metrics", counted | {metric})
+        usage[metric] += 1
+
+
+def count_chat_length(usage: Counter[str]) -> None:
+    """Count the message, and the chat when it reaches a counted length."""
+    chat_messages = cl.user_session.get("chat_messages", 0) + 1
+    cl.user_session.set("chat_messages", chat_messages)
+    usage["messages"] += 1
+    if chat_messages in CHAT_LENGTH_METRICS:
+        usage[CHAT_LENGTH_METRICS[chat_messages]] += 1
+
+
+async def save_usage(usage: Mapping[str, int]) -> None:
+    """Write the counters in one transaction, off the event loop.
+
+    A locked stats file would otherwise stall every chat for seconds. It still
+    holds up the chat that waits for the write, so an outcome is shown to the
+    user, and an answer is kept in the history, before it is counted. A wrong
+    metric name is a mistake in this module and must not break a chat either.
+    """
+    try:
+        await asyncio.to_thread(stats.record, usage)
+    except ValueError:
+        logger.exception("usage_stats_unknown_metric")
 
 
 def extract_text_pymupdf(path: str | Path) -> str:
@@ -229,6 +262,7 @@ async def process_attachments(
     skipped_count = 0
     file_types: list[str] = []
     document_token_counts: list[int] = []
+    uploaded_bytes = 0
 
     for element in elements:
         element_path = getattr(element, "path", None)
@@ -241,6 +275,7 @@ async def process_attachments(
         try:
             file_path = upload_path.resolve(strict=True)
             file_path.relative_to(_UPLOAD_DIR)
+            uploaded_bytes += file_path.stat().st_size
         except (OSError, RuntimeError, ValueError):
             logger.warning("attachment_outside_upload_directory")
             skipped_count += 1
@@ -305,6 +340,7 @@ async def process_attachments(
         skipped_count=skipped_count,
         file_types=file_types,
         token_counts=document_token_counts,
+        uploaded_bytes=uploaded_bytes,
     )
 
 
@@ -339,7 +375,6 @@ async def on_chat_start() -> None:
     cl.user_session.set("past_content", [{"role": "system", "content": SYSTEM_PROMPT}])
     cl.user_session.set("past_content_token_counts", [count_tokens(SYSTEM_PROMPT)])
     cl.user_session.set("thinking", False)
-    cl.user_session.set("analytics", default_analytics())
     set_session_model_settings(DEFAULT_MODEL)
 
     elements = [
@@ -382,7 +417,6 @@ async def on_message(message: cl.Message) -> None:
         past_content_token_counts = await asyncio.gather(
             *(asyncio.to_thread(count_tokens, item["content"]) for item in past_content)
         )
-    analytics = cl.user_session.get("analytics") or default_analytics()
     max_tokens = cl.user_session.get(
         "max_tokens",
         calculate_input_token_limit(
@@ -392,6 +426,7 @@ async def on_message(message: cl.Message) -> None:
         ),
     )
 
+    usage: Counter[str] = Counter()
     if elements:
         empty_document_prompt = DOCUMENT_PROCESSING_TEMPLATE.format(
             instructions=message.content,
@@ -405,22 +440,28 @@ async def on_message(message: cl.Message) -> None:
             0,
             max_tokens - prompt_overhead_tokens,
         )
+        started = time.perf_counter()
         attachment_result = await process_attachments(elements, attachment_budget)
+        usage["document_ms"] += elapsed_ms(started)
         user_message_content = DOCUMENT_PROCESSING_TEMPLATE.format(
             instructions=message.content,
             documents=attachment_result.prompt_content,
             horizontal_line=HORIZONTAL_LINE,
         )
-        analytics["attached_doc_count"] += attachment_result.processed_count
-        analytics["failed_doc_count"] += attachment_result.failed_count
-        analytics["skipped_doc_count"] += attachment_result.skipped_count
-        analytics["attached_doc_token_count"].extend(attachment_result.token_counts)
-        analytics["attached_doc_types"].extend(attachment_result.file_types)
+        usage["messages_with_documents"] += 1
+        count_once_per_chat(usage, "chats_with_documents")
+        usage["documents_processed"] += attachment_result.processed_count
+        usage["documents_failed"] += attachment_result.failed_count
+        usage["documents_skipped"] += attachment_result.skipped_count
+        usage["document_tokens"] += sum(attachment_result.token_counts)
+        usage["uploaded_bytes"] += attachment_result.uploaded_bytes
+        usage.update(map(file_type_metric, attachment_result.file_types))
 
-    user_token_count = await asyncio.to_thread(count_tokens, message.content)
-    analytics["user_message_count"] += 1
-    analytics["user_total_tokens"] += user_token_count
-    analytics["user_token_count"].append(user_token_count)
+    count_chat_length(usage)
+    usage["message_tokens"] += await asyncio.to_thread(count_tokens, message.content)
+    if cl.user_session.get("thinking", False):
+        usage["messages_with_thinking"] += 1
+        count_once_per_chat(usage, "chats_with_thinking")
 
     current_message = {"role": "user", "content": user_message_content}
     current_message_tokens = await asyncio.to_thread(count_tokens, user_message_content)
@@ -439,13 +480,17 @@ async def on_message(message: cl.Message) -> None:
 
     if context_window.was_trimmed:
         logger.info("context_history_trimmed")
+        usage["history_trimmed"] += 1
         await cl.Message(content=CONTEXT_TRIMMED).send()
 
     if not context_window.current_message_fits:
+        usage["message_too_large"] += 1
         await cl.Message(content=MESSAGE_TOO_LARGE).send()
-        cl.user_session.set("analytics", analytics)
+        await save_usage(usage)
         return
 
+    # The message is counted now: its answer can take minutes, fail or be stopped.
+    await save_usage(usage)
     past_content = context_window.messages
     past_content_token_counts = context_window.token_counts
     msg = cl.Message(content="")
@@ -469,60 +514,45 @@ async def on_message(message: cl.Message) -> None:
     if not cl.user_session.get("thinking", False) and reasoning_effort:
         request_kwargs["reasoning_effort"] = reasoning_effort
 
+    started = time.perf_counter()
+    # Until the first answer token, the model server queues, reads the prompt and
+    # thinks. Only the time after it measures how fast the answer is generated.
+    stream_started: float | None = None
     try:
         stream = await local_client.chat.completions.create(**request_kwargs)
         async for part in stream:
             if not part.choices:
                 continue
             if token := part.choices[0].delta.content or "":
+                if stream_started is None:
+                    stream_started = time.perf_counter()
                 await msg.stream_token(token)
     except OpenAIError:
         logger.exception("llm_request_failed")
         msg.content = LLM_ERROR
         await msg.update()
-        cl.user_session.set("analytics", analytics)
+        await save_usage({"llm_errors": 1})
         return
     except Exception:
         logger.exception("unexpected_llm_request_failed")
         msg.content = LLM_ERROR
         await msg.update()
-        cl.user_session.set("analytics", analytics)
+        await save_usage({"llm_errors": 1})
         return
 
+    response_ms = elapsed_ms(started)
+    response_stream_ms = elapsed_ms(stream_started) if stream_started is not None else 0
+    response_tokens = await asyncio.to_thread(count_tokens, msg.content)
     past_content.append({"role": "assistant", "content": msg.content})
-    past_content_token_counts.append(await asyncio.to_thread(count_tokens, msg.content))
+    past_content_token_counts.append(response_tokens)
     cl.user_session.set("past_content", past_content)
     cl.user_session.set("past_content_token_counts", past_content_token_counts)
-    cl.user_session.set("analytics", analytics)
     await msg.update()
-
-
-@cl.on_chat_end
-def end() -> None:
-    """Log aggregate analytics when a chat session ends."""
-    analytics = cl.user_session.get("analytics")
-    if not analytics:
-        return
-
-    user_msg_count = analytics["user_message_count"]
-    user_total_tokens = analytics["user_total_tokens"]
-    user_token_counts = analytics["user_token_count"]
-    avg_user_tokens = user_total_tokens / user_msg_count if user_msg_count else 0
-
-    doc_count = analytics["attached_doc_count"]
-    doc_types = analytics["attached_doc_types"]
-    doc_token_counts = analytics["attached_doc_token_count"]
-    total_doc_tokens = sum(doc_token_counts)
-    avg_doc_tokens = total_doc_tokens / doc_count if doc_count else 0
-    doc_type_counts = Counter(doc_types)
-
-    logger.log(
-        ANALYTICS_LEVEL,
-        "chat_session_analytics - "
-        f"user_messages={{count: {user_msg_count}, total_tokens: {user_total_tokens}, "
-        f"avg_tokens_per_msg: {avg_user_tokens:.1f}, token_counts: {user_token_counts}}}, "
-        f"attached_documents={{count: {doc_count}, failed: {analytics['failed_doc_count']}, "
-        f"skipped: {analytics['skipped_doc_count']}, total_tokens: {total_doc_tokens}, "
-        f"avg_tokens_per_doc: {avg_doc_tokens:.1f}, file_types: {dict(doc_type_counts)}, "
-        f"token_counts_per_doc: {doc_token_counts}}}",
+    await save_usage(
+        {
+            "responses": 1,
+            "response_ms": response_ms,
+            "response_stream_ms": response_stream_ms,
+            "response_tokens": response_tokens,
+        }
     )

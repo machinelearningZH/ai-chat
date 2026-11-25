@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from string import Formatter
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from dotenv import load_dotenv
@@ -32,9 +33,6 @@ class JSONFormatter(logging.Formatter):
 
 
 _config_cache: dict | None = None
-
-ANALYTICS_LEVEL = 25
-logging.addLevelName(ANALYTICS_LEVEL, "ANALYTICS")
 
 
 REQUIRED_MESSAGE_KEYS = {
@@ -214,6 +212,24 @@ def validate_config(config: dict) -> None:
     ):
         raise ConfigError("logging.log_file must be a non-empty string")
 
+    # Required on purpose: whether usage is counted has to be a stated decision,
+    # not the side effect of a config file written before the setting existed.
+    if "usage_stats" not in config:
+        raise ConfigError(
+            "usage_stats is missing in config.yaml. Add it with db_file and "
+            "timezone, or set db_file to null to disable usage statistics"
+        )
+    usage_stats = _require_mapping(config, "usage_stats")
+    db_file = usage_stats.get("db_file")
+    if db_file is not None and (not isinstance(db_file, str) or not db_file):
+        raise ConfigError("usage_stats.db_file must be a non-empty string or null")
+    try:
+        ZoneInfo(usage_stats.get("timezone"))
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as error:
+        raise ConfigError(
+            "usage_stats.timezone must be a time zone name such as Europe/Zurich"
+        ) from error
+
     runtime = _require_mapping(config, "runtime")
     for key in ("tiktoken_cache_dir", "token_encoding", "upload_dir"):
         if not isinstance(runtime.get(key), str) or not runtime[key]:
@@ -273,7 +289,11 @@ def load_config() -> dict:
 def get_custom_logger(
     name: str = "chainlit_logger", log_file: str | Path | None = None
 ) -> logging.Logger:
-    """Return the application's structured file logger."""
+    """Return the application's structured logger.
+
+    Everything goes to the log file. Errors also go to stderr, so that they show
+    up in the container logs and not only in a file inside the container.
+    """
     if log_file is None:
         config = load_config()
         log_file = config["logging"]["log_file"]
@@ -293,6 +313,11 @@ def get_custom_logger(
         file_handler.setLevel(log_level)
         file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
+
+        error_handler = logging.StreamHandler()
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(JSONFormatter())
+        logger.addHandler(error_handler)
         logger.propagate = False
 
     return logger
