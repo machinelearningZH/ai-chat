@@ -1,32 +1,16 @@
-# Remaining test risks
+# Open work
 
-- Real model-server HTTP/SSE compatibility, SDK retry behavior, and Chainlit browser
-  interactions remain unverified; current streaming coverage ends at the SDK call.
-- Docling conversion and its model assets were not exercised. PDF tests use the
-  production PyMuPDF path without downloads.
-- Conversion semaphore saturation, cancellation, simultaneous messages in one
-  session, and stream resource cleanup need explicit lifecycle/concurrency
-  contracts before adding assertions. No concurrent-message guarantee is documented.
-- Template validation for malformed or extra placeholders and non-finite numeric
-  settings needs a focused configuration-contract review. No behavior was changed
-  or failing assertion suppressed for these untested cases.
-- Docker/Compose builds, container smoke checks, accelerator configurations, and
-  launch scripts were not executed locally in this audit; existing CI checks remain.
-- Third-party deprecation warnings (Traceloop/Pydantic and PyMuPDF bindings) remain
-  visible. Dependency upgrades and migration away from `fitz` are outside this task.
-
-# Usage statistics
-
-- A stopped answer counts as a message without a response or a model error; this is
-  tested with a cancelled stream, not with Chainlit's stop button. The report shows
-  such messages only as the unnamed rest of its "Not answered" line.
-- The Docker path was not run locally: `make stats` through Compose, the ownership of
-  the `usage-stats` volume, and the container start with the write check. CI starts
-  the container without a volume.
-
-# Dependency monitoring
-
-- Dependabot, checked 2026-11-19: the repository setting "Dependabot security updates"
-  is disabled and no `.github/dependabot.yml` exists. The two pull requests of
-  2026-02-11 were security updates. AGENTS.md asks for dependency monitoring to stay
-  enabled.
+- Test a chat in the browser against each supported model server. Check streamed
+  replies, retries, reconnects, and the Stop button. Current tests use a stand-in
+  for the model server.
+- Test Docling with representative Office and HTML files. Upload tests
+  currently cover plain text and PDF text extraction.
+- Define and test what happens when several imports are queued, when an import
+  or reply is cancelled, and when two messages arrive in the same chat.
+- Check how configuration handles extra or malformed template fields and
+  numbers such as infinity.
+- Test the usage report with Compose running and stopped, including write
+  access to the stats volume. CI checks Compose configuration and whether the
+  image serves the chat page.
+- Verify the repository's dependency monitoring settings and add container
+  image scanning to CI.

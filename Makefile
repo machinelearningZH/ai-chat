@@ -24,7 +24,7 @@ export OLLAMA_VERSION
 
 help: ## Show the available commands.
 	@printf '%s\n' \
-		'make setup          Install the locked Python environment' \
+		'make setup          Install the Python environment' \
 		'make test           Run the test suite' \
 		'make lint           Run the Ruff linter' \
 		'make format         Format code with Ruff' \
@@ -46,10 +46,10 @@ help: ## Show the available commands.
 		'make down           Stop the Compose stack' \
 		'' \
 		'Add UP_FLAGS=-d to a Compose start target to run in the background.' \
-		'Add SINCE=YYYY-MM-DD or BY=day to make stats to narrow the report.' \
+		'Add SINCE=YYYY-MM-DD to filter dates or BY=day to group by day.' \
 		'Compose context length follows config.yaml; override with OLLAMA_CONTEXT_LENGTH=…'
 
-setup: ## Install the locked Python environment.
+setup: ## Install the Python environment.
 	uv sync
 
 test: ## Run the test suite.
@@ -127,5 +127,5 @@ stats: ## Show usage statistics of the Compose app or volume, else of the native
 		PYTHONPATH=src uv run --no-sync python -m ai_chat.usage_report $(STATS_ARGS); \
 	fi
 
-down: ## Stop the Compose stack without deleting models.
+down: ## Stop the Compose stack and keep models and usage statistics.
 	$(COMPOSE) down

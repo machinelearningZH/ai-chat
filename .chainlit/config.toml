@@ -1,6 +1,6 @@
 [project]
 
-# Whether to enable telemetry (default: true). No personal data is collected.
+# Keep Chainlit telemetry off.
 enable_telemetry = false
 
 # List of environment variables to be provided by each user to use the app.
@@ -86,7 +86,7 @@ max_size_mb = 20
 "text/x-r-source"  = [".r", ".R"]
 "application/x-r"  = [".r", ".R"]
 
-# CSV (and optional TSV)
+# CSV
 "text/csv"                 = [".csv"]
 "application/csv"          = [".csv"]
 "application/vnd.ms-excel" = [".csv"]
