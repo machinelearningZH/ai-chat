@@ -182,8 +182,9 @@ def build_context_window(
     )
 
 
-def elapsed_ms(started: float) -> int:
-    return round((time.perf_counter() - started) * 1000)
+def elapsed_ms(started: float, finished: float | None = None) -> int:
+    end = time.perf_counter() if finished is None else finished
+    return max(round((end - started) * 1000), 0)
 
 
 def count_once_per_chat(usage: Counter[str], metric: str) -> None:
@@ -275,14 +276,15 @@ async def process_attachments(
         try:
             file_path = upload_path.resolve(strict=True)
             file_path.relative_to(_UPLOAD_DIR)
-            uploaded_bytes += file_path.stat().st_size
         except (OSError, RuntimeError, ValueError):
             logger.warning("attachment_outside_upload_directory")
             skipped_count += 1
             continue
 
         suffix = file_path.suffix.lower()
+        file_types.append(suffix or "unknown")
         try:
+            uploaded_bytes += file_path.stat().st_size
             if suffix in FILE_FORMAT_WHITELIST:
                 result = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
             elif suffix == ".pdf":
@@ -313,7 +315,6 @@ async def process_attachments(
             token_count = budget_decision.next_tokens
             attached_docs.append(document_item)
             processed_count += 1
-            file_types.append(suffix or "unknown")
             document_token_counts.append(candidate_tokens)
         except Exception:
             logger.exception("attachment_processing_failed")
@@ -375,6 +376,8 @@ async def on_chat_start() -> None:
     cl.user_session.set("past_content", [{"role": "system", "content": SYSTEM_PROMPT}])
     cl.user_session.set("past_content_token_counts", [count_tokens(SYSTEM_PROMPT)])
     cl.user_session.set("thinking", False)
+    cl.user_session.set("chat_messages", 0)
+    cl.user_session.set("counted_chat_metrics", set())
     set_session_model_settings(DEFAULT_MODEL)
 
     elements = [
@@ -540,8 +543,11 @@ async def on_message(message: cl.Message) -> None:
         await save_usage({"llm_errors": 1})
         return
 
-    response_ms = elapsed_ms(started)
-    response_stream_ms = elapsed_ms(stream_started) if stream_started is not None else 0
+    finished = time.perf_counter()
+    response_ms = elapsed_ms(started, finished)
+    response_stream_ms = (
+        elapsed_ms(stream_started, finished) if stream_started is not None else 0
+    )
     response_tokens = await asyncio.to_thread(count_tokens, msg.content)
     past_content.append({"role": "assistant", "content": msg.content})
     past_content_token_counts.append(response_tokens)

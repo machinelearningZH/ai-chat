@@ -141,6 +141,32 @@ def _template_fields(template: str) -> set[str]:
     }
 
 
+def validate_usage_stats_config(config: dict) -> dict:
+    """Validate and return the usage_stats section of config.yaml."""
+    if not isinstance(config, dict):
+        raise ConfigError("config.yaml must contain a mapping")
+    # Required on purpose: whether usage is counted has to be a stated decision,
+    # not the side effect of a config file written before the setting existed.
+    if "usage_stats" not in config:
+        raise ConfigError(
+            "usage_stats is missing in config.yaml. Add it with db_file and "
+            "timezone, or set db_file to null to disable usage statistics"
+        )
+    usage_stats = _require_mapping(config, "usage_stats")
+    db_file = usage_stats.get("db_file")
+    if db_file is not None and (not isinstance(db_file, str) or not db_file):
+        raise ConfigError("usage_stats.db_file must be a non-empty string or null")
+    timezone = usage_stats.get("timezone")
+    if db_file is not None or timezone is not None:
+        try:
+            ZoneInfo(timezone)
+        except (TypeError, ValueError, ZoneInfoNotFoundError) as error:
+            raise ConfigError(
+                "usage_stats.timezone must be a time zone name such as Europe/Zurich"
+            ) from error
+    return usage_stats
+
+
 def validate_config(config: dict) -> None:
     """Validate runtime configuration once at startup."""
     if not isinstance(config, dict):
@@ -212,23 +238,7 @@ def validate_config(config: dict) -> None:
     ):
         raise ConfigError("logging.log_file must be a non-empty string")
 
-    # Required on purpose: whether usage is counted has to be a stated decision,
-    # not the side effect of a config file written before the setting existed.
-    if "usage_stats" not in config:
-        raise ConfigError(
-            "usage_stats is missing in config.yaml. Add it with db_file and "
-            "timezone, or set db_file to null to disable usage statistics"
-        )
-    usage_stats = _require_mapping(config, "usage_stats")
-    db_file = usage_stats.get("db_file")
-    if db_file is not None and (not isinstance(db_file, str) or not db_file):
-        raise ConfigError("usage_stats.db_file must be a non-empty string or null")
-    try:
-        ZoneInfo(usage_stats.get("timezone"))
-    except (TypeError, ValueError, ZoneInfoNotFoundError) as error:
-        raise ConfigError(
-            "usage_stats.timezone must be a time zone name such as Europe/Zurich"
-        ) from error
+    validate_usage_stats_config(config)
 
     runtime = _require_mapping(config, "runtime")
     for key in ("tiktoken_cache_dir", "token_encoding", "upload_dir"):
@@ -284,6 +294,20 @@ def load_config() -> dict:
         validate_config(loaded_config)
         _config_cache = loaded_config
     return _config_cache
+
+
+def load_usage_stats_config() -> dict:
+    """Load and validate only usage_stats from config.yaml.
+
+    Avoids requiring API keys or opening the application log file when reading
+    reports from the CLI.
+    """
+    if _config_cache is not None:
+        return _config_cache["usage_stats"]
+    config_path = PROJECT_ROOT / "config.yaml"
+    with config_path.open(encoding="utf-8") as config_file:
+        loaded_config = yaml.safe_load(config_file)
+    return validate_usage_stats_config(loaded_config)
 
 
 def get_custom_logger(

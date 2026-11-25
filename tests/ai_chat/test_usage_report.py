@@ -209,7 +209,8 @@ def test_format_breakdown_shows_shares_of_chats_messages_and_documents() -> None
         "history": ["0%"],
         "processed": ["33%", "50%"],
         "failed": ["17%", "50%"],
-        "too": ["50%", "0%"],
+        "skipped": ["50%", "0%"],
+        "Code": ["0%"],
         "other": ["0%"],
     }
     for text in (
@@ -284,19 +285,20 @@ def test_format_report_detailed_shows_every_counter_as_a_row() -> None:
         "tokens each": ["125", "-", "125"],
         "tokens/second": ["83", "-", "83"],
     }
-    assert rows_from(detailed, "Documents") == {
-        "Documents": ["6", "0", "6"],
-        "failed": ["1", "0", "1"],
-        "too large": ["3", "0", "3"],
-        "MB": ["1.5", "0.0", "1.5"],
-        "import seconds": ["9.0", "0.0", "9.0"],
-        "import seconds each": ["1.5", "-", "1.5"],
-    }
-    file_types = rows_from(detailed, "Processed documents")
-    assert list(file_types)[3:-1] == list(usage_stats.FILE_TYPES)
-    assert file_types["Processed documents"] == ["2", "0", "2"]
-    assert file_types["pdf"] == ["50%", "-", "1 (50%)"]
-    assert file_types["* month to date"] == []
+    documents = rows_from(detailed, "Documents")
+    assert list(documents)[6:] == list(usage_stats.FILE_TYPES)
+    assert documents["Documents"] == ["6", "0", "6"]
+    assert documents["failed"] == ["1", "0", "1"]
+    assert documents["skipped"] == ["3", "0", "3"]
+    assert documents["MB"] == ["1.5", "0.0", "1.5"]
+    assert documents["import seconds"] == ["9.0", "0.0", "9.0"]
+    assert documents["import seconds each"] == ["1.5", "-", "1.5"]
+    assert documents["pdf"] == ["50%", "-", "1 (50%)"]
+    processed = rows_from(detailed, "Processed documents")
+    assert processed["Processed documents"] == ["2", "0", "2"]
+    assert processed["tokens"] == ["0", "0", "0"]
+    assert processed["tokens each"] == ["0", "-", "0"]
+    assert processed["* month to date"] == []
 
 
 def test_report_rows_name_only_known_metrics_and_cover_all_of_them() -> None:
@@ -398,3 +400,100 @@ def test_main_reports_empty_statistics(tmp_path, monkeypatch, capsys) -> None:
 def test_main_rejects_invalid_options(arguments: list[str]) -> None:
     with pytest.raises(SystemExit):
         usage_report.main(arguments)
+
+
+@pytest.mark.parametrize("count", [12_345, 123_456])
+def test_format_report_detailed_keeps_gap_and_alignment_for_large_totals(
+    count: int,
+) -> None:
+    monthly = {
+        "chats": count,
+        "chats_with_follow_up": count,
+        "messages": count,
+        "responses": count,
+    }
+    counters = {f"2026-{month:02}": monthly for month in range(1, 7)}
+
+    lines = report(counters, current_period="2026-06", detailed=True).splitlines()
+    table_lines = [
+        line
+        for line in lines[2:]
+        if line
+        and not line.startswith(("Messages by ", "* ", " ", "0", "1", "2"))
+        or line.startswith("  ")
+    ]
+    # Header line and all table metric rows should share one right edge and <= 80 cols.
+    header_width = len(lines[2])
+    assert header_width <= 80
+    follow_up_line = next(line for line in lines if line.startswith("  with follow-up"))
+    assert len(follow_up_line) == header_width
+    # At least two spaces separate the rightmost period cell ("100%") from the total.
+    assert re.search(r"100%\s{2,}[\d,]+ \(100%\)$", follow_up_line)
+    assert len(table_lines) > 0
+
+
+def test_main_reports_disabled_usage_statistics(monkeypatch, capsys) -> None:
+    disabled = UsageStats(None)
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: disabled)
+
+    usage_report.main([])
+
+    assert "disabled" in capsys.readouterr().out.lower()
+
+
+def test_main_reports_empty_window_when_since_matches_no_data(
+    seeded_stats, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
+
+    usage_report.main(["--since", "2026-12-01"])
+
+    assert capsys.readouterr().out == "No usage statistics recorded since 2026-12-01.\n"
+
+
+def test_main_reads_usage_in_a_single_snapshot(
+    seeded_stats, monkeypatch, capsys
+) -> None:
+    calls: list[str] = []
+    original = seeded_stats.read_snapshot
+
+    def counting_snapshot(since: str = ""):
+        calls.append(since)
+        return original(since)
+
+    monkeypatch.setattr(seeded_stats, "read_snapshot", counting_snapshot)
+    monkeypatch.setattr(
+        seeded_stats,
+        "read",
+        lambda *_a, **_kw: pytest.fail("main should use read_snapshot"),
+    )
+    monkeypatch.setattr(
+        seeded_stats,
+        "read_message_hours",
+        lambda *_a, **_kw: pytest.fail("main should use read_snapshot"),
+    )
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
+
+    usage_report.main(["--by", "day"])
+
+    assert calls == [""]
+    assert "Usage   2026-10-03" in capsys.readouterr().out
+
+
+def test_format_breakdown_shows_code_types_and_skipped_label() -> None:
+    overall = Counter(
+        chats=1,
+        messages=1,
+        documents_processed=1,
+        documents_failed=1,
+        documents_skipped=1,
+        file_type_py=2,
+        file_type_rmd=1,
+    )
+
+    breakdown = format_breakdown(overall)
+
+    assert "  skipped" in breakdown
+    assert "  too large" not in breakdown
+    assert "Code" in breakdown
+    assert "100%" in next(line for line in breakdown.splitlines() if "Code" in line)

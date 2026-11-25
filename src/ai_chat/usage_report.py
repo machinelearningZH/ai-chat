@@ -14,8 +14,10 @@ from datetime import date, timedelta
 from ai_chat.usage_stats import FILE_TYPES, PERIOD_LENGTHS, load_usage_stats
 
 DOCUMENT_OUTCOMES = ("documents_processed", "documents_failed", "documents_skipped")
+ALL_FILE_TYPES = tuple(f"file_type_{file_type}" for file_type in FILE_TYPES)
 OFFICE_TYPES = ("file_type_docx", "file_type_pptx", "file_type_xlsx")
-TEXT_TYPES = ("file_type_csv", "file_type_txt", "file_type_md")
+TEXT_TYPES = ("file_type_csv", "file_type_txt", "file_type_md", "file_type_html")
+CODE_TYPES = ("file_type_py", "file_type_r", "file_type_rmd")
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 # The report is laid out for a terminal that is 80 characters wide.
@@ -185,26 +187,47 @@ DETAILED_ROWS = [
     [
         Row("Documents", DOCUMENT_OUTCOMES),
         Row("  failed", "documents_failed"),
-        Row("  too large", "documents_skipped"),
+        Row("  skipped", "documents_skipped"),
         UPLOADED_MB,
         Row("  import seconds", "document_ms", unit=1000, decimals=1),
         IMPORT_SECONDS_EACH,
-    ],
-    [
-        Row("Processed documents", "documents_processed"),
-        Row("  tokens", "document_tokens"),
-        TOKENS_PER_DOCUMENT,
         *(
             Row(
                 f"  {file_type}",
                 f"file_type_{file_type}",
-                "documents_processed",
+                ALL_FILE_TYPES,
                 share=True,
             )
             for file_type in FILE_TYPES
         ),
     ],
+    [
+        Row("Processed documents", "documents_processed"),
+        Row("  tokens", "document_tokens"),
+        TOKENS_PER_DOCUMENT,
+    ],
 ]
+
+
+def sum_counters(groups: Iterable[Counter[str]]) -> Counter[str]:
+    """Sum a sequence of metric counters in linear time."""
+    overall: Counter[str] = Counter()
+    for counters in groups:
+        overall.update(counters)
+    return overall
+
+
+def aggregate_periods(
+    days: dict[str, dict[str, int]], by: str
+) -> dict[str, dict[str, int]]:
+    """Roll daily counters into periods (month or day)."""
+    if by == "day":
+        return days
+    prefix_length = PERIOD_LENGTHS[by]
+    aggregated: dict[str, Counter[str]] = {}
+    for day, counters in days.items():
+        aggregated.setdefault(day[:prefix_length], Counter()).update(counters)
+    return {period: dict(counters) for period, counters in aggregated.items()}
 
 
 def fill_periods(
@@ -267,6 +290,7 @@ def format_table(
     by: str,
     current_period: str,
     exact_total: bool,
+    overall: Counter[str] | None = None,
 ) -> str:
     """Render one line per row, with the latest periods as columns and a total.
 
@@ -274,9 +298,21 @@ def format_table(
     shortened like the other cells unless the exact total is asked for.
     """
     shown = dict(list(periods.items())[-SHOWN_PERIODS:])
-    overall = sum(periods.values(), Counter())
+    if overall is None:
+        overall = sum_counters(periods.values())
     to_date = list(shown)[-1] == current_period
-    total_width = 13 if exact_total else 8
+    rendered_groups = [
+        [
+            (row, row.exact(overall) if exact_total else row.cell(overall))
+            for row in group
+        ]
+        for group in groups
+    ]
+    min_total_width = 13 if exact_total else 8
+    total_width = max(
+        min_total_width,
+        *(len(total) + 2 for group in rendered_groups for _, total in group),
+    )
 
     labels = "".join(period_label(period, by).rjust(CELL_WIDTH) for period in shown)
     # The marker of an unfinished period hangs into the gap before the total.
@@ -284,14 +320,13 @@ def format_table(
         f"{'':{LABEL_WIDTH}}{labels}{'*' * to_date}{'total':>{total_width - to_date}}"
     )
     lines = [header]
-    for index, group in enumerate(groups):
+    for index, group in enumerate(rendered_groups):
         if index:
             lines.append("")
-        for row in group:
+        for row, total in group:
             cells = "".join(
                 row.cell(counters).rjust(CELL_WIDTH) for counters in shown.values()
             )
-            total = row.exact(overall) if exact_total else row.cell(overall)
             lines.append(f"{row.label:{LABEL_WIDTH}}{cells}{total:>{total_width}}")
 
     if to_date:
@@ -340,15 +375,18 @@ def format_breakdown(overall: Counter[str]) -> str:
         outcomes = [
             ("  processed", "documents_processed"),
             ("  failed", "documents_failed"),
-            ("  too large", "documents_skipped"),
+            ("  skipped", "documents_skipped"),
+            ("", ""),
             ("", ""),
         ]
         file_types = [
             ("PDF", "file_type_pdf"),
             ("Office", OFFICE_TYPES),
             ("Text", TEXT_TYPES),
+            ("Code", CODE_TYPES),
             ("other", "file_type_other"),
         ]
+        typed_documents = amount(overall, ALL_FILE_TYPES)
         lines.append(
             line(
                 "Documents",
@@ -365,9 +403,7 @@ def format_breakdown(overall: Counter[str]) -> str:
                     outcome,
                     of(metric, documents) if outcome else " " * share_width,
                     f"{file_type:8}"
-                    + share_bar(
-                        amount(overall, type_metrics), overall["documents_processed"]
-                    ),
+                    + share_bar(amount(overall, type_metrics), typed_documents),
                 )
             )
     else:
@@ -444,7 +480,7 @@ def format_bar_chart(title: str, values: dict[str, int]) -> str:
             *(
                 f"{label:<5}"
                 f"{'█' * round(CHART_BAR_WIDTH * value / largest):<{CHART_BAR_WIDTH}}"
-                f"{value:>8,}{f'({value / whole:.0%})':>8}"
+                f" {value:>8,}{f'({value / whole:.0%})':>8}"
                 for label, value in values.items()
             ),
         ]
@@ -460,25 +496,43 @@ def format_report(
     by: str = "month",
     current_period: str = "",
     detailed: bool = False,
+    since: str = "",
 ) -> str:
     """Render the one-screen overview, or every counter when detailed."""
     if not counters:
+        if since:
+            return f"No usage statistics recorded since {since}."
         return "No usage statistics recorded yet."
 
     periods = fill_periods(counters, by)
+    overall = sum_counters(periods.values())
     first, last = min(periods), max(periods)
     title = f"Usage   {first} – {last} · {plural(len(periods), by)} · {timezone}"
     if detailed:
         by_hour = {f"{hour:02}": hours.get(hour, 0) for hour in range(24)}
         blocks = [
-            format_table(DETAILED_ROWS, periods, by, current_period, exact_total=True),
+            format_table(
+                DETAILED_ROWS,
+                periods,
+                by,
+                current_period,
+                exact_total=True,
+                overall=overall,
+            ),
             format_bar_chart(f"Messages by hour of day ({timezone})", by_hour),
             format_bar_chart("Messages by weekday", weekdays),
         ]
     else:
         blocks = [
-            format_table(OVERVIEW_ROWS, periods, by, current_period, exact_total=False),
-            format_breakdown(sum(periods.values(), Counter())),
+            format_table(
+                OVERVIEW_ROWS,
+                periods,
+                by,
+                current_period,
+                exact_total=False,
+                overall=overall,
+            ),
+            format_breakdown(overall),
             format_activity(hours, weekdays),
         ]
     return "\n\n".join([title, *blocks])
@@ -495,7 +549,7 @@ def main(arguments: list[str] | None = None) -> None:
     parser.add_argument(
         "--since",
         type=date.fromisoformat,
-        default=date.min,
+        default=None,
         help="first day to include, as YYYY-MM-DD",
     )
     parser.add_argument(
@@ -505,17 +559,23 @@ def main(arguments: list[str] | None = None) -> None:
     )
     options = parser.parse_args(arguments)
     stats = load_usage_stats()
-    since = options.since.isoformat()
+    if not stats.enabled:
+        print("Usage statistics are disabled (usage_stats.db_file is null).")
+        return
+
+    since = options.since.isoformat() if options.since else ""
+    days, hours = stats.read_snapshot(since)
 
     print(
         format_report(
-            stats.read(options.by, since),
-            stats.read_message_hours(since),
-            messages_by_weekday(stats.read("day", since)),
+            aggregate_periods(days, options.by),
+            hours,
+            messages_by_weekday(days),
             timezone=stats.timezone.key,
             by=options.by,
             current_period=stats.today().isoformat()[: PERIOD_LENGTHS[options.by]],
             detailed=options.detailed,
+            since=since,
         )
     )
 

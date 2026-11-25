@@ -18,11 +18,34 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from ai_chat.config import PROJECT_ROOT, ConfigError, get_custom_logger, load_config
+from ai_chat.config import (
+    PROJECT_ROOT,
+    ConfigError,
+    get_custom_logger,
+    load_usage_stats_config,
+)
 
-logger = get_custom_logger()
+FILE_TYPES = (
+    "pdf",
+    "docx",
+    "pptx",
+    "xlsx",
+    "csv",
+    "txt",
+    "md",
+    "html",
+    "py",
+    "r",
+    "rmd",
+    "other",
+)
 
-FILE_TYPES = ("pdf", "docx", "pptx", "xlsx", "csv", "txt", "md", "other")
+FILE_TYPE_ALIASES = {
+    "markdown": "md",
+    "mdown": "md",
+    "mkd": "md",
+    "htm": "html",
+}
 
 METRICS = (
     "chats",  # Chats with at least one message.
@@ -106,6 +129,7 @@ def utc_now() -> datetime:
 def file_type_metric(suffix: str) -> str:
     """Map a user-controlled file extension onto the closed set of metrics."""
     file_type = suffix.lower().removeprefix(".")
+    file_type = FILE_TYPE_ALIASES.get(file_type, file_type)
     return f"file_type_{file_type if file_type in FILE_TYPES else 'other'}"
 
 
@@ -115,13 +139,43 @@ class UsageStats:
     def __init__(self, db_file: Path | None, timezone: str = "UTC") -> None:
         self._db_file = db_file
         self.timezone = ZoneInfo(timezone)
+        self._schema_ready = False
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether usage statistics storage is enabled."""
+        return self._db_file is not None
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect_write(self) -> Iterator[sqlite3.Connection]:
+        assert self._db_file is not None
         self._db_file.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self._db_file)) as connection, connection:
-            connection.executescript(_CREATE_TABLES)
+        needs_init = (
+            not self._schema_ready
+            or not self._db_file.is_file()
+            or self._db_file.stat().st_size == 0
+        )
+        with closing(sqlite3.connect(self._db_file)) as connection:
+            if needs_init:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.executescript(_CREATE_TABLES)
+                self._schema_ready = True
+            with connection:
+                yield connection
+
+    @contextmanager
+    def _connect_read(self) -> Iterator[sqlite3.Connection]:
+        assert self._db_file is not None
+        uri = f"{self._db_file.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
             yield connection
+
+    def _has_readable_db(self) -> bool:
+        return (
+            self._db_file is not None
+            and self._db_file.is_file()
+            and self._db_file.stat().st_size > 0
+        )
 
     def today(self) -> date:
         """Return the current day in the stats time zone."""
@@ -137,7 +191,7 @@ class UsageStats:
         if self._db_file is None:
             return
         try:
-            with self._connect() as connection:
+            with self._connect_write() as connection:
                 # Opening a read-only file works; only a write shows the problem.
                 connection.execute(_ADD, ("", METRICS[0], 0))
                 connection.rollback()
@@ -165,17 +219,17 @@ class UsageStats:
         if not rows:
             return
         try:
-            with self._connect() as connection:
+            with self._connect_write() as connection:
                 connection.executemany(_ADD, rows)
                 if messages := counters.get("messages"):
                     connection.execute(_ADD_MESSAGE_HOUR, (day, now.hour, messages))
         except (OSError, sqlite3.Error):
-            logger.exception("usage_stats_write_failed")
+            get_custom_logger().exception("usage_stats_write_failed")
 
     def _query(self, sql: str, parameters: tuple) -> list[tuple]:
-        if self._db_file is None or not self._db_file.is_file():
+        if not self._has_readable_db():
             return []
-        with self._connect() as connection:
+        with self._connect_read() as connection:
             return connection.execute(sql, parameters).fetchall()
 
     def read(self, by: str = "month", since: str = "") -> dict[str, dict[str, int]]:
@@ -189,9 +243,26 @@ class UsageStats:
         """Return {hour of day: messages}, from an ISO day on."""
         return dict(self._query(_READ_MESSAGE_HOURS, (since,)))
 
+    def read_snapshot(
+        self, since: str = ""
+    ) -> tuple[dict[str, dict[str, int]], dict[int, int]]:
+        """Return daily counters and message hours from one read-only snapshot."""
+        if not self._has_readable_db():
+            return {}, {}
+        with self._connect_read() as connection:
+            connection.execute("BEGIN")
+            days: dict[str, dict[str, int]] = {}
+            for day, metric, value in connection.execute(
+                _READ, (PERIOD_LENGTHS["day"], since)
+            ):
+                days.setdefault(day, {})[metric] = value
+            hours = dict(connection.execute(_READ_MESSAGE_HOURS, (since,)))
+        return days, hours
+
 
 def load_usage_stats() -> UsageStats:
     """Return the stats store configured under usage_stats in config.yaml."""
-    config = load_config()["usage_stats"]
+    config = load_usage_stats_config()
     db_file = config["db_file"]
-    return UsageStats(PROJECT_ROOT / db_file if db_file else None, config["timezone"])
+    timezone = config.get("timezone") or "UTC"
+    return UsageStats(PROJECT_ROOT / db_file if db_file else None, timezone)

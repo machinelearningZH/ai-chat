@@ -133,6 +133,14 @@ def test_check_writable_rejects_a_stats_file_it_cannot_write(
     [
         (".pdf", "file_type_pdf"),
         (".DOCX", "file_type_docx"),
+        (".py", "file_type_py"),
+        (".R", "file_type_r"),
+        (".Rmd", "file_type_rmd"),
+        (".html", "file_type_html"),
+        (".HTM", "file_type_html"),
+        (".markdown", "file_type_md"),
+        (".mdown", "file_type_md"),
+        (".mkd", "file_type_md"),
         (".secret-project-name", "file_type_other"),
         ("", "file_type_other"),
     ],
@@ -141,3 +149,67 @@ def test_file_type_metric_maps_extensions_to_closed_set(
     suffix: str, expected: str
 ) -> None:
     assert file_type_metric(suffix) == expected
+
+
+def test_usage_stats_module_does_not_initialize_logger_at_import() -> None:
+    from ai_chat import usage_stats
+
+    assert "logger" not in vars(usage_stats)
+
+
+def test_usage_stats_enables_wal_and_supports_concurrent_writes_and_reads(
+    tmp_path,
+) -> None:
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_file = tmp_path / "usage.sqlite"
+    stats = UsageStats(db_file)
+    stats.check_writable()
+
+    with sqlite3.connect(db_file) as connection:
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    assert journal_mode.lower() == "wal"
+
+    def write_batch(_index: int) -> None:
+        for _ in range(10):
+            stats.record({"messages": 1})
+
+    def read_batch(_index: int) -> None:
+        for _ in range(10):
+            stats.read_snapshot()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = [
+            *(pool.submit(write_batch, i) for i in range(8)),
+            *(pool.submit(read_batch, i) for i in range(4)),
+        ]
+        for future in futures:
+            future.result()
+
+    days, hours = stats.read_snapshot()
+    assert sum(counters["messages"] for counters in days.values()) == 80
+    assert sum(hours.values()) == 80
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may write everywhere")
+def test_read_snapshot_reads_empty_and_readonly_files_without_writing(
+    tmp_path, seeded_stats
+) -> None:
+    empty_file = tmp_path / "empty.sqlite"
+    empty_file.touch()
+    empty_file.chmod(0o444)
+    try:
+        assert UsageStats(empty_file).read_snapshot() == ({}, {})
+    finally:
+        empty_file.chmod(0o644)
+
+    db_file = seeded_stats._db_file
+    db_file.chmod(0o444)
+    try:
+        days, hours = seeded_stats.read_snapshot(since="2026-10-20")
+    finally:
+        db_file.chmod(0o644)
+
+    assert days == {"2026-10-20": {"messages": 2}, "2026-11-05": {"messages": 4}}
+    assert hours == {9: 2, 14: 4}

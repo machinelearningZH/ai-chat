@@ -115,6 +115,33 @@ def test_validate_config_allows_disabling_usage_stats() -> None:
     validate_config(config)
 
 
+def test_validate_config_allows_disabling_usage_stats_without_timezone() -> None:
+    config = make_config()
+    config["usage_stats"] = {"db_file": None}
+
+    validate_config(config)
+
+
+def test_load_usage_stats_config_does_not_require_api_key_or_open_log_file(
+    config_file, monkeypatch, tmp_path
+) -> None:
+    import yaml
+
+    from ai_chat.config import load_usage_stats_config
+
+    log_file = tmp_path / "untouched.log"
+    settings = make_config()
+    settings["openai"]["base_url"] = "https://api.example.test/v1"
+    settings["logging"]["log_file"] = str(log_file)
+    config_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    monkeypatch.delenv("AI_CHAT_API_KEY", raising=False)
+
+    loaded = load_usage_stats_config()
+
+    assert loaded == settings["usage_stats"]
+    assert not log_file.exists()
+
+
 def test_validate_config_requires_a_decision_about_usage_stats() -> None:
     config = make_config()
     del config["usage_stats"]

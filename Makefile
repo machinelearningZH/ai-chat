@@ -5,6 +5,7 @@ CONFIG_CONTEXT_LENGTH = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync py
 CONFIG_MODEL_NAME = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync python -c 'from ai_chat.config import load_config; print(load_config()["model"]["default_selection"])')
 OLLAMA_CONTEXT_LENGTH ?= $(CONFIG_CONTEXT_LENGTH)
 COMPOSE = OLLAMA_CONTEXT_LENGTH=$(OLLAMA_CONTEXT_LENGTH) docker compose -f compose.yaml
+COMPOSE_STATS = OLLAMA_CONTEXT_LENGTH=1 docker compose -f compose.yaml
 NVIDIA_COMPOSE = $(COMPOSE) -f compose.nvidia.yaml
 AMD_COMPOSE = $(COMPOSE) -f compose.amd.yaml
 OLLAMA_VERSION ?= 0.32.0
@@ -14,7 +15,7 @@ SERVER_HOST ?= 127.0.0.1
 VLLM_PORT ?= 8001
 LLAMACPP_PORT ?= 8002
 STATS_ARGS = $(if $(SINCE),--since "$(SINCE)") $(if $(BY),--by "$(BY)") \
-	$(if $(DETAILED),--detailed)
+	$(if $(filter-out 0 false FALSE no NO,$(DETAILED)),--detailed)
 
 export OLLAMA_VERSION
 
@@ -113,13 +114,17 @@ logs: ## Follow Compose logs.
 ps: ## Show Compose service status.
 	$(COMPOSE) ps
 
-stats: ## Show usage statistics of the running Compose app, else of the native app.
-	@if [ -n "$$($(COMPOSE) ps --quiet app 2>/dev/null)" ]; then \
+stats: ## Show usage statistics of the Compose app or volume, else of the native app.
+	@if [ -n "$$($(COMPOSE_STATS) ps --quiet app 2>/dev/null)" ]; then \
 		echo 'Source: Compose app'; \
-		$(COMPOSE) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+		$(COMPOSE_STATS) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+	elif docker volume inspect ai-chat_usage-stats >/dev/null 2>&1 \
+		&& docker image inspect "ai-chat:$${AI_CHAT_TAG:-latest}" >/dev/null 2>&1; then \
+		echo 'Source: Compose volume (app is stopped)'; \
+		$(COMPOSE_STATS) run --rm --no-deps -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
 	else \
-		echo 'Source: native app (no Compose app is running)'; \
-		PYTHONPATH=src uv run python -m ai_chat.usage_report $(STATS_ARGS); \
+		echo 'Source: native app'; \
+		PYTHONPATH=src uv run --no-sync python -m ai_chat.usage_report $(STATS_ARGS); \
 	fi
 
 down: ## Stop the Compose stack without deleting models.

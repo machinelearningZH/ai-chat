@@ -525,7 +525,8 @@ def test_unreadable_pdf_reports_failure_and_is_deleted(
     )
     assert result.failed_count == 1
     assert result.processed_count == result.skipped_count == 0
-    assert result.token_counts == result.file_types == []
+    assert result.token_counts == []
+    assert result.file_types == [".pdf"]
     assert "broken.pdf" in result.prompt_content
     assert "RuntimeError" not in result.prompt_content
     assert "not a PDF" not in result.prompt_content
@@ -610,7 +611,7 @@ def test_on_message_counts_uploaded_documents(
     upload = tmp_path / "large.txt"
     upload.write_text("content", encoding="utf-8")
     monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
-    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    monkeypatch.setattr(app, "elapsed_ms", lambda *_args: 1500)
     chat.session.values["max_tokens"] = 0
 
     asyncio.run(
@@ -634,7 +635,7 @@ def test_on_message_counts_uploaded_documents(
 def test_on_message_counts_and_times_successful_responses(
     monkeypatch, chat, app_stats
 ) -> None:
-    monkeypatch.setattr(app, "elapsed_ms", lambda _started: 1500)
+    monkeypatch.setattr(app, "elapsed_ms", lambda *_args: 1500)
     chat.create.side_effect = None
     chat.create.return_value = response_chunks("Hello", " world")
 
@@ -788,3 +789,100 @@ def test_save_usage_does_not_let_an_unknown_metric_break_a_chat(app_stats) -> No
     asyncio.run(app.save_usage({"messages": 1, "mesages": 1}))
 
     assert app_stats.read() == {}
+
+
+def test_on_message_uses_single_end_timestamp_for_response_and_stream_duration(
+    monkeypatch, chat, app_stats
+) -> None:
+    # Advance perf_counter on every call: if response_ms and response_stream_ms
+    # called perf_counter separately at the end, response_stream_ms would exceed
+    # response_ms here.
+    ticks = iter([10.0, 10.5, 11.0, 12.0])
+    monkeypatch.setattr(app.time, "perf_counter", lambda: next(ticks))
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Hello", " world")
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    (counters,) = app_stats.read().values()
+    assert counters["response_ms"] == 1000
+    assert counters["response_stream_ms"] == 500
+
+
+def test_on_chat_start_resets_usage_session_counters(chat, monkeypatch) -> None:
+    chat.session.values.update(
+        {
+            "chat_messages": 5,
+            "counted_chat_metrics": {"chats_with_thinking"},
+        }
+    )
+    monkeypatch.setattr(app.cl, "Text", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        app.cl,
+        "ChatSettings",
+        lambda _widgets: SimpleNamespace(send=chat.create),
+    )
+    chat.create.side_effect = None
+    chat.create.return_value = None
+
+    asyncio.run(app.on_chat_start())
+
+    assert chat.session.values["chat_messages"] == 0
+    assert chat.session.values["counted_chat_metrics"] == set()
+
+
+def test_on_message_counts_file_types_for_failed_and_skipped_documents(
+    tmp_path, monkeypatch, chat, app_stats
+) -> None:
+    broken = tmp_path / "broken.py"
+    broken.write_bytes(b"\xff")
+    oversized = tmp_path / "notes.rmd"
+    oversized.write_text("content", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    chat.session.values["max_tokens"] = 0
+
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="question",
+                elements=[
+                    SimpleNamespace(path=str(broken), name="broken.py"),
+                    SimpleNamespace(path=str(oversized), name="notes.rmd"),
+                ],
+            )
+        )
+    )
+
+    (counters,) = app_stats.read().values()
+    assert counters["documents_failed"] == 1
+    assert counters["documents_skipped"] == 1
+    assert counters["file_type_py"] == 1
+    assert counters["file_type_rmd"] == 1
+
+
+def test_process_attachments_does_not_mislog_stat_error_as_outside_upload_dir(
+    tmp_path, monkeypatch, chat
+) -> None:
+    upload = tmp_path / "doc.txt"
+    upload.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    warnings: list[str] = []
+    monkeypatch.setattr(app.logger, "warning", lambda msg, *_a: warnings.append(msg))
+    real_stat = app.Path.stat
+
+    def failing_stat(self, *args, **kwargs):
+        if self == upload.resolve():
+            raise OSError("vanished")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(app.Path, "stat", failing_stat)
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(upload), name="doc.txt")], max_tokens=1000
+        )
+    )
+
+    assert "attachment_outside_upload_directory" not in warnings
+    assert result.failed_count == 1
+    assert result.skipped_count == 0
