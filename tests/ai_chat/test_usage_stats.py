@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 from datetime import date
 
 import pytest
@@ -167,7 +168,7 @@ def test_usage_stats_enables_wal_and_supports_concurrent_writes_and_reads(
     stats = UsageStats(db_file)
     stats.check_writable()
 
-    with sqlite3.connect(db_file) as connection:
+    with closing(sqlite3.connect(db_file)) as connection:
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
     assert journal_mode.lower() == "wal"
 

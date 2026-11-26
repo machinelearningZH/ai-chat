@@ -19,12 +19,13 @@ STATS_ARGS = $(if $(SINCE),--since "$(SINCE)") $(if $(BY),--by "$(BY)") \
 
 export OLLAMA_VERSION
 
-.PHONY: help setup test lint format check run-native run-vllm run-llamacpp serve-vllm serve-llamacpp \
+.PHONY: help setup update-packages test lint format check run-native run-vllm run-llamacpp serve-vllm serve-llamacpp \
 	build app-host stack-cpu stack-nvidia stack-amd down logs ps model stats
 
 help: ## Show the available commands.
 	@printf '%s\n' \
 		'make setup          Install the Python environment' \
+		'make update-packages  Upgrade, test, commit, and push the lockfile' \
 		'make test           Run the test suite' \
 		'make lint           Run the Ruff linter' \
 		'make format         Format code with Ruff' \
@@ -51,6 +52,22 @@ help: ## Show the available commands.
 
 setup: ## Install the Python environment.
 	uv sync
+
+update-packages: ## Upgrade dependencies and push the lockfile from a clean branch.
+	@branch=$$(git symbolic-ref --quiet --short HEAD) && [ "$$branch" != main ] || { \
+		echo 'Run update-packages on a branch other than main.' >&2; exit 1; \
+	}
+	@changes=$$(git status --porcelain --untracked-files=no) && [ -z "$$changes" ] || { \
+		echo 'Commit or stash tracked changes before running update-packages.' >&2; exit 1; \
+	}
+	uv lock --upgrade
+	uv sync
+	PYTHONWARNINGS=error uv run pytest
+	@if git diff --quiet HEAD -- uv.lock; then \
+		echo 'Dependencies are up to date.'; \
+	else \
+		git commit -m 'chore: update packages' -- uv.lock && git push origin HEAD; \
+	fi
 
 test: ## Run the test suite.
 	uv run pytest
