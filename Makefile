@@ -54,8 +54,8 @@ setup: ## Install the Python environment.
 	uv sync
 
 update-packages: ## Upgrade dependencies and push the lockfile from a clean branch.
-	@branch=$$(git symbolic-ref --quiet --short HEAD) && [ "$$branch" != main ] || { \
-		echo 'Run update-packages on a branch other than main.' >&2; exit 1; \
+	@git symbolic-ref --quiet HEAD >/dev/null || { \
+		echo 'Run update-packages with a branch checked out.' >&2; exit 1; \
 	}
 	@changes=$$(git status --porcelain --untracked-files=no) && [ -z "$$changes" ] || { \
 		echo 'Commit or stash tracked changes before running update-packages.' >&2; exit 1; \
