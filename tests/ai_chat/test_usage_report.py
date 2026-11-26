@@ -462,16 +462,6 @@ def test_main_reads_usage_in_a_single_snapshot(
         return original(since)
 
     monkeypatch.setattr(seeded_stats, "read_snapshot", counting_snapshot)
-    monkeypatch.setattr(
-        seeded_stats,
-        "read",
-        lambda *_a, **_kw: pytest.fail("main should use read_snapshot"),
-    )
-    monkeypatch.setattr(
-        seeded_stats,
-        "read_message_hours",
-        lambda *_a, **_kw: pytest.fail("main should use read_snapshot"),
-    )
     monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
 
     usage_report.main(["--by", "day"])

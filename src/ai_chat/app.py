@@ -1,8 +1,10 @@
 import asyncio
 import os
+import stat
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from threading import local
@@ -19,22 +21,6 @@ from ai_chat.config import (
     load_config,
     resolve_openai_api_key,
 )
-from ai_chat.messages import (
-    CONTEXT_TRIMMED,
-    DOCUMENT_ERROR_TEMPLATE,
-    DOCUMENT_FAILURE,
-    DOCUMENT_ITEM_TEMPLATE,
-    DOCUMENT_LIMIT_WARNING,
-    DOCUMENT_PARTIAL_SUCCESS,
-    DOCUMENT_PROCESSING_STATUS,
-    DOCUMENT_PROCESSING_TEMPLATE,
-    DOCUMENT_SUCCESS,
-    HORIZONTAL_LINE,
-    LLM_ERROR,
-    MESSAGE_TOO_LARGE,
-    SYSTEM_PROMPT,
-    WELCOME,
-)
 from ai_chat.usage_stats import (
     CHAT_LENGTH_METRICS,
     file_type_metric,
@@ -48,6 +34,18 @@ stats = load_usage_stats()
 # import: the app must not start if enabled usage statistics cannot be written.
 stats.check_writable()
 runtime_config = config["runtime"]
+
+_STRIPPED_MESSAGES = {
+    "welcome",
+    "system_prompt",
+    "document_processing_template",
+    "document_item_template",
+}
+MESSAGES = {
+    key: value.strip() if key in _STRIPPED_MESSAGES else value
+    for key, value in config["messages"].items()
+}
+HORIZONTAL_LINE = "\n\n" + ("-" * 80) + "\n\n"
 
 cache_dir = Path(runtime_config["tiktoken_cache_dir"])
 if not cache_dir.is_absolute():
@@ -72,8 +70,11 @@ local_client = AsyncOpenAI(
 
 _UPLOAD_DIR = (PROJECT_ROOT / runtime_config["upload_dir"]).resolve()
 _docling_state = local()
-_document_conversion_slots = asyncio.Semaphore(
-    runtime_config["max_concurrent_document_conversions"]
+# A dedicated bounded pool both limits concurrent conversions and caps the
+# number of thread-local Docling DocumentConverter instances kept in memory.
+_document_executor = ThreadPoolExecutor(
+    max_workers=runtime_config["max_concurrent_document_conversions"],
+    thread_name_prefix="doc-convert",
 )
 
 
@@ -83,12 +84,6 @@ class ContextWindow:
     token_counts: list[int]
     was_trimmed: bool
     current_message_fits: bool
-
-
-@dataclass(frozen=True)
-class DocumentBudgetDecision:
-    include: bool
-    next_tokens: int
 
 
 @dataclass(frozen=True)
@@ -104,6 +99,9 @@ class AttachmentProcessingResult:
 
 def count_tokens(text: str) -> int:
     return len(enc.encode(text))
+
+
+_SYSTEM_PROMPT_TOKENS = count_tokens(MESSAGES["system_prompt"])
 
 
 def calculate_input_token_limit(
@@ -130,15 +128,6 @@ def resolve_model_name(
     """Resolve client-provided model settings to an allowed model name."""
     allowed = available_models if available_models is not None else set(MODELS_CONFIG)
     return selected_model if selected_model in allowed else default_model
-
-
-def budget_document_tokens(
-    current_tokens: int, candidate_tokens: int, max_tokens: int
-) -> DocumentBudgetDecision:
-    next_tokens = current_tokens + candidate_tokens
-    if next_tokens > max_tokens:
-        return DocumentBudgetDecision(include=False, next_tokens=current_tokens)
-    return DocumentBudgetDecision(include=True, next_tokens=next_tokens)
 
 
 def build_context_window(
@@ -204,6 +193,15 @@ def count_chat_length(usage: Counter[str]) -> None:
         usage[CHAT_LENGTH_METRICS[chat_messages]] += 1
 
 
+def _session_lock() -> asyncio.Lock:
+    """Return a per-session lock so overlapping turns do not clobber history."""
+    lock = cl.user_session.get("message_lock")
+    if lock is None:
+        lock = asyncio.Lock()
+        cl.user_session.set("message_lock", lock)
+    return lock
+
+
 async def save_usage(usage: Mapping[str, int]) -> None:
     """Write the counters in one transaction, off the event loop.
 
@@ -223,11 +221,6 @@ def extract_text_pymupdf(path: str | Path) -> str:
         return "\n".join(page.get_text("text") for page in doc).strip()
 
 
-async def convert_pdf_to_text(path: str | Path) -> str:
-    async with _document_conversion_slots:
-        return await asyncio.to_thread(extract_text_pymupdf, path)
-
-
 def get_docling_converter():
     converter = getattr(_docling_state, "converter", None)
     if converter is None:
@@ -243,9 +236,20 @@ def extract_with_docling(file_path: str | Path) -> str:
     return doc_result.document.export_to_markdown()
 
 
-async def convert_with_docling(path: str | Path) -> str:
-    async with _document_conversion_slots:
-        return await asyncio.to_thread(extract_with_docling, path)
+async def run_document_conversion(
+    extractor: Callable[[str | Path], str], path: str | Path
+) -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_document_executor, extractor, path)
+
+
+def _unlink_upload(upload_path: Path) -> None:
+    try:
+        upload_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("attachment_cleanup_failed")
 
 
 async def process_attachments(
@@ -253,7 +257,7 @@ async def process_attachments(
     max_tokens: int,
 ) -> AttachmentProcessingResult:
     """Convert safe uploaded files and return per-file processing outcomes."""
-    processing_msg = cl.Message(content=DOCUMENT_PROCESSING_STATUS)
+    processing_msg = cl.Message(content=MESSAGES["document_processing_status"])
     await processing_msg.send()
 
     attached_docs: list[str] = []
@@ -265,6 +269,7 @@ async def process_attachments(
     document_token_counts: list[int] = []
     uploaded_bytes = 0
 
+    validated_uploads: list[tuple[Path, Path, str, int | None]] = []
     for element in elements:
         element_path = getattr(element, "path", None)
         if not element_path:
@@ -280,58 +285,86 @@ async def process_attachments(
             logger.warning("attachment_outside_upload_directory")
             skipped_count += 1
             continue
-
-        suffix = file_path.suffix.lower()
-        file_types.append(suffix or "unknown")
         try:
-            uploaded_bytes += file_path.stat().st_size
-            if suffix in FILE_FORMAT_WHITELIST:
-                result = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
-            elif suffix == ".pdf":
-                result = await convert_pdf_to_text(file_path)
-                if not result.strip():
-                    raise RuntimeError("PyMuPDF returned empty content")
-            else:
-                result = await convert_with_docling(file_path)
-                if not result.strip():
-                    raise RuntimeError("Docling returned empty content")
+            stat_result = file_path.stat()
+        except OSError:
+            validated_uploads.append((upload_path, file_path, element_name, None))
+            continue
+        if not stat.S_ISREG(stat_result.st_mode):
+            logger.warning("attachment_not_a_regular_file")
+            skipped_count += 1
+            continue
+        validated_uploads.append(
+            (upload_path, file_path, element_name, stat_result.st_size)
+        )
 
-            document_item = DOCUMENT_ITEM_TEMPLATE.format(
-                horizontal_line=HORIZONTAL_LINE,
-                filename=element_name,
-                content=result,
-            )
-            candidate_tokens = await asyncio.to_thread(count_tokens, document_item)
-            budget_decision = budget_document_tokens(
-                token_count, candidate_tokens, max_tokens
-            )
-            if not budget_decision.include:
-                await cl.Message(
-                    content=DOCUMENT_LIMIT_WARNING.format(element_name=element_name)
-                ).send()
-                skipped_count += 1
-                continue
-
-            token_count = budget_decision.next_tokens
-            attached_docs.append(document_item)
-            processed_count += 1
-            document_token_counts.append(candidate_tokens)
-        except Exception:
-            logger.exception("attachment_processing_failed")
-            attached_docs.append(DOCUMENT_ERROR_TEMPLATE.format(filename=element_name))
-            failed_count += 1
-        finally:
+    try:
+        for upload_path, file_path, element_name, file_size in validated_uploads:
+            suffix = file_path.suffix.lower()
+            file_types.append(suffix or "unknown")
             try:
-                upload_path.unlink()
-            except OSError:
-                logger.exception("attachment_cleanup_failed")
+                uploaded_bytes += (
+                    file_size if file_size is not None else file_path.stat().st_size
+                )
+                if suffix in FILE_FORMAT_WHITELIST:
+                    result = await asyncio.to_thread(
+                        file_path.read_text, encoding="utf-8"
+                    )
+                elif suffix == ".pdf":
+                    result = await run_document_conversion(
+                        extract_text_pymupdf, file_path
+                    )
+                    if not result.strip():
+                        raise RuntimeError("PyMuPDF returned empty content")
+                else:
+                    result = await run_document_conversion(
+                        extract_with_docling, file_path
+                    )
+                    if not result.strip():
+                        raise RuntimeError("Docling returned empty content")
+
+                document_item = MESSAGES["document_item_template"].format(
+                    horizontal_line=HORIZONTAL_LINE,
+                    filename=element_name,
+                    content=result,
+                )
+                candidate_tokens = await asyncio.to_thread(count_tokens, document_item)
+                if token_count + candidate_tokens > max_tokens:
+                    await cl.Message(
+                        content=MESSAGES["document_limit_warning"].format(
+                            element_name=element_name
+                        )
+                    ).send()
+                    skipped_count += 1
+                    continue
+
+                token_count += candidate_tokens
+                attached_docs.append(document_item)
+                processed_count += 1
+                document_token_counts.append(candidate_tokens)
+            except Exception:
+                logger.exception("attachment_processing_failed")
+                failed_count += 1
+                error_item = MESSAGES["document_error_template"].format(
+                    filename=element_name
+                )
+                error_tokens = await asyncio.to_thread(count_tokens, error_item)
+                if token_count + error_tokens <= max_tokens:
+                    token_count += error_tokens
+                    attached_docs.append(error_item)
+            finally:
+                _unlink_upload(upload_path)
+    finally:
+        # Clean up any remaining validated uploads if processing was cancelled.
+        for upload_path, _, _, _ in validated_uploads:
+            _unlink_upload(upload_path)
 
     if processed_count and not (failed_count or skipped_count):
-        processing_msg.content = DOCUMENT_SUCCESS
+        processing_msg.content = MESSAGES["document_success"]
     elif processed_count:
-        processing_msg.content = DOCUMENT_PARTIAL_SUCCESS
+        processing_msg.content = MESSAGES["document_partial_success"]
     else:
-        processing_msg.content = DOCUMENT_FAILURE
+        processing_msg.content = MESSAGES["document_failure"]
     await processing_msg.update()
 
     return AttachmentProcessingResult(
@@ -373,15 +406,22 @@ async def setup_agent(settings: dict) -> None:
 @cl.on_chat_start
 async def on_chat_start() -> None:
     logger.info("chat_initiated")
-    cl.user_session.set("past_content", [{"role": "system", "content": SYSTEM_PROMPT}])
-    cl.user_session.set("past_content_token_counts", [count_tokens(SYSTEM_PROMPT)])
+    cl.user_session.set(
+        "past_content", [{"role": "system", "content": MESSAGES["system_prompt"]}]
+    )
+    cl.user_session.set("past_content_token_counts", [_SYSTEM_PROMPT_TOKENS])
     cl.user_session.set("thinking", False)
     cl.user_session.set("chat_messages", 0)
     cl.user_session.set("counted_chat_metrics", set())
+    cl.user_session.set("message_lock", asyncio.Lock())
     set_session_model_settings(DEFAULT_MODEL)
 
     elements = [
-        cl.Text(name=config["chat"]["app_name"], content=WELCOME, display="inline")
+        cl.Text(
+            name=config["chat"]["app_name"],
+            content=MESSAGES["welcome"],
+            display="inline",
+        )
     ]
     await cl.Message(content="", elements=elements).send()
     await cl.ChatSettings(
@@ -408,17 +448,27 @@ async def on_chat_start() -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    async with _session_lock():
+        await _handle_message(message)
+
+
+async def _handle_message(message: cl.Message) -> None:
     user_message_content = message.content
     elements = message.elements or []
     past_content = cl.user_session.get("past_content") or [
-        {"role": "system", "content": SYSTEM_PROMPT}
+        {"role": "system", "content": MESSAGES["system_prompt"]}
     ]
     past_content_token_counts = cl.user_session.get("past_content_token_counts")
     if not past_content_token_counts or len(past_content_token_counts) != len(
         past_content
     ):
-        past_content_token_counts = await asyncio.gather(
-            *(asyncio.to_thread(count_tokens, item["content"]) for item in past_content)
+        past_content_token_counts = list(
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(count_tokens, item["content"])
+                    for item in past_content
+                )
+            )
         )
     max_tokens = cl.user_session.get(
         "max_tokens",
@@ -431,22 +481,19 @@ async def on_message(message: cl.Message) -> None:
 
     usage: Counter[str] = Counter()
     if elements:
-        empty_document_prompt = DOCUMENT_PROCESSING_TEMPLATE.format(
+        empty_document_prompt = MESSAGES["document_processing_template"].format(
             instructions=message.content,
             documents="",
             horizontal_line=HORIZONTAL_LINE,
         )
-        prompt_overhead_tokens = await asyncio.to_thread(
-            count_tokens, f"{SYSTEM_PROMPT}{empty_document_prompt}"
+        prompt_overhead_tokens = past_content_token_counts[0] + await asyncio.to_thread(
+            count_tokens, empty_document_prompt
         )
-        attachment_budget = max(
-            0,
-            max_tokens - prompt_overhead_tokens,
-        )
+        attachment_budget = max(0, max_tokens - prompt_overhead_tokens)
         started = time.perf_counter()
         attachment_result = await process_attachments(elements, attachment_budget)
         usage["document_ms"] += elapsed_ms(started)
-        user_message_content = DOCUMENT_PROCESSING_TEMPLATE.format(
+        user_message_content = MESSAGES["document_processing_template"].format(
             instructions=message.content,
             documents=attachment_result.prompt_content,
             horizontal_line=HORIZONTAL_LINE,
@@ -484,11 +531,11 @@ async def on_message(message: cl.Message) -> None:
     if context_window.was_trimmed:
         logger.info("context_history_trimmed")
         usage["history_trimmed"] += 1
-        await cl.Message(content=CONTEXT_TRIMMED).send()
+        await cl.Message(content=MESSAGES["context_trimmed"]).send()
 
     if not context_window.current_message_fits:
         usage["message_too_large"] += 1
-        await cl.Message(content=MESSAGE_TOO_LARGE).send()
+        await cl.Message(content=MESSAGES["message_too_large"]).send()
         await save_usage(usage)
         return
 
@@ -530,15 +577,14 @@ async def on_message(message: cl.Message) -> None:
                 if stream_started is None:
                     stream_started = time.perf_counter()
                 await msg.stream_token(token)
-    except OpenAIError:
-        logger.exception("llm_request_failed")
-        msg.content = LLM_ERROR
-        await msg.update()
-        await save_usage({"llm_errors": 1})
-        return
-    except Exception:
-        logger.exception("unexpected_llm_request_failed")
-        msg.content = LLM_ERROR
+    except Exception as error:
+        event = (
+            "llm_request_failed"
+            if isinstance(error, OpenAIError)
+            else "unexpected_llm_request_failed"
+        )
+        logger.exception(event)
+        msg.content = MESSAGES["llm_error"]
         await msg.update()
         await save_usage({"llm_errors": 1})
         return

@@ -1,7 +1,7 @@
 FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 
 FROM python:3.13.14-slim-bookworm
-RUN --mount=from=ghcr.io/astral-sh/uv:0.13.5,source=/uv,target=/tmp/security-uv \
+RUN --mount=from=uv,source=/uv,target=/tmp/security-uv \
     /tmp/security-uv pip install --system --no-deps 'pip>=26.2.2'
 
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -9,12 +9,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
 
-COPY --from=uv /uv /uvx /bin/
-
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 ENV HOME=/tmp

@@ -50,6 +50,9 @@ file_format_whitelist:
   - ".csv"
   - ".py"
   - ".md"
+  - ".markdown"
+  - ".mdown"
+  - ".mkd"
   - ".rmd"
   - ".r"
 

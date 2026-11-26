@@ -5,13 +5,15 @@ from datetime import date
 import pytest
 
 from ai_chat.config import ConfigError
+from ai_chat.usage_report import aggregate_periods
 from ai_chat.usage_stats import UsageStats, file_type_metric
 
 
 def test_record_sums_counters_per_day(seeded_stats) -> None:
     seeded_stats.record({"messages": 1, "uploaded_bytes": 2048})
 
-    assert seeded_stats.read(by="day") == {
+    days, _ = seeded_stats.read_snapshot()
+    assert days == {
         "2026-10-03": {"messages": 1},
         "2026-10-20": {"messages": 2},
         "2026-11-05": {"messages": 5, "uploaded_bytes": 2048},
@@ -26,33 +28,34 @@ def test_record_leaves_out_counters_of_zero(tmp_path) -> None:
     assert not db_file.exists()
 
     stats.record({"messages": 1, "documents_failed": 0})
-    assert stats.read() != {}
-    assert all("documents_failed" not in counters for counters in stats.read().values())
+    days, _ = stats.read_snapshot()
+    assert days != {}
+    assert all("documents_failed" not in counters for counters in days.values())
 
 
-def test_read_sums_days_into_months(seeded_stats) -> None:
-    assert seeded_stats.read(by="month") == {
+def test_aggregate_periods_sums_days_into_months(seeded_stats) -> None:
+    days, _ = seeded_stats.read_snapshot()
+    assert aggregate_periods(days, "month") == {
         "2026-10": {"messages": 3},
         "2026-11": {"messages": 4},
     }
 
 
-def test_read_ignores_days_before_since(seeded_stats) -> None:
-    assert seeded_stats.read(by="month", since="2026-10-20") == {
+def test_read_snapshot_ignores_days_before_since(seeded_stats) -> None:
+    days, hours = seeded_stats.read_snapshot(since="2026-10-20")
+    assert aggregate_periods(days, "month") == {
         "2026-10": {"messages": 2},
         "2026-11": {"messages": 4},
     }
+    assert hours == {9: 2, 14: 4}
+    assert seeded_stats.read_snapshot(since="2026-10-21")[1] == {14: 4}
 
 
 def test_record_adds_messages_to_the_hour_of_day_profile(seeded_stats) -> None:
     seeded_stats.record({"chats": 1})
 
-    assert seeded_stats.read_message_hours() == {9: 3, 14: 4}
-
-
-def test_read_message_hours_ignores_days_before_since(seeded_stats) -> None:
-    assert seeded_stats.read_message_hours(since="2026-10-20") == {9: 2, 14: 4}
-    assert seeded_stats.read_message_hours(since="2026-10-21") == {14: 4}
+    _, hours = seeded_stats.read_snapshot()
+    assert hours == {9: 3, 14: 4}
 
 
 def test_record_uses_the_configured_time_zone(tmp_path, set_clock) -> None:
@@ -62,8 +65,9 @@ def test_record_uses_the_configured_time_zone(tmp_path, set_clock) -> None:
     stats.record({"messages": 1})
 
     assert stats.today() == date(2026, 11, 1)
-    assert stats.read(by="day") == {"2026-11-01": {"messages": 1}}
-    assert stats.read_message_hours() == {0: 1}
+    days, hours = stats.read_snapshot()
+    assert days == {"2026-11-01": {"messages": 1}}
+    assert hours == {0: 1}
 
 
 def test_record_rejects_metrics_outside_the_closed_set(tmp_path) -> None:
@@ -73,7 +77,7 @@ def test_record_rejects_metrics_outside_the_closed_set(tmp_path) -> None:
         stats.record({"messages": 1, "text typed by a user": 1})
 
     assert "text typed by a user" not in str(error.value)
-    assert stats.read() == {}
+    assert stats.read_snapshot() == ({}, {})
 
 
 def test_disabled_stats_store_nothing() -> None:
@@ -82,14 +86,13 @@ def test_disabled_stats_store_nothing() -> None:
     stats.check_writable()
     stats.record({"messages": 1})
 
-    assert stats.read() == {}
-    assert stats.read_message_hours() == {}
+    assert stats.read_snapshot() == ({}, {})
 
 
 def test_read_does_not_create_a_missing_stats_file(tmp_path) -> None:
     db_file = tmp_path / "usage.sqlite"
 
-    assert UsageStats(db_file).read() == {}
+    assert UsageStats(db_file).read_snapshot() == ({}, {})
     assert not db_file.exists()
 
 
@@ -100,7 +103,7 @@ def test_record_does_not_raise_when_storage_fails(tmp_path) -> None:
 
     stats.record({"messages": 1})
 
-    assert stats.read() == {}
+    assert stats.read_snapshot() == ({}, {})
 
 
 def test_check_writable_accepts_a_new_stats_file_without_counting(tmp_path) -> None:
@@ -108,7 +111,7 @@ def test_check_writable_accepts_a_new_stats_file_without_counting(tmp_path) -> N
 
     stats.check_writable()
 
-    assert stats.read() == {}
+    assert stats.read_snapshot() == ({}, {})
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root may write everywhere")
@@ -210,6 +213,23 @@ def test_read_snapshot_reads_empty_and_readonly_files_without_writing(
     try:
         days, hours = seeded_stats.read_snapshot(since="2026-10-20")
     finally:
+        db_file.chmod(0o644)
+
+    assert days == {"2026-10-20": {"messages": 2}, "2026-11-05": {"messages": 4}}
+    assert hours == {9: 2, 14: 4}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may write everywhere")
+def test_read_snapshot_reads_wal_db_from_readonly_directory(seeded_stats) -> None:
+    db_file = seeded_stats._db_file
+    assert db_file is not None
+    stats_dir = db_file.parent
+    db_file.chmod(0o444)
+    stats_dir.chmod(0o555)
+    try:
+        days, hours = seeded_stats.read_snapshot(since="2026-10-20")
+    finally:
+        stats_dir.chmod(0o755)
         db_file.chmod(0o644)
 
     assert days == {"2026-10-20": {"messages": 2}, "2026-11-05": {"messages": 4}}

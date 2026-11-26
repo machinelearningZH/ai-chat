@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from string import Formatter
@@ -65,8 +66,8 @@ def parse_log_level(value: str | int) -> int:
         return value
     if not isinstance(value, str):
         raise ConfigError("logging.log_level must be a string or integer")
-    level = logging.getLevelName(value.upper())
-    if isinstance(level, int):
+    level = logging.getLevelNamesMapping().get(value.upper())
+    if level is not None:
         return level
     raise ConfigError(f"Unknown logging.log_level: {value}")
 
@@ -102,10 +103,32 @@ def _require_mapping(config: dict, key: str) -> dict:
     return value
 
 
+def _require_non_empty_str(mapping: dict, key: str, label: str | None = None) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{label or key} must be a non-empty string")
+    return value
+
+
 def _require_positive_int(config: dict, key: str) -> int:
     value = config.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigError(f"{key} must be a positive integer")
+    return value
+
+
+def _require_finite_number(
+    mapping: dict, key: str, label: str, *, allow_zero: bool = False
+) -> int | float:
+    value = mapping.get(key)
+    if (
+        not isinstance(value, int | float)
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or (value < 0 if allow_zero else value <= 0)
+    ):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ConfigError(f"{label} must be a finite {qualifier} number")
     return value
 
 
@@ -128,17 +151,54 @@ def default_model_context_length(config: dict) -> int:
     default_selection = model.get("default_selection")
     models = model.get("models", [])
     for model_config in models:
-        if model_config.get("name") == default_selection:
+        if (
+            isinstance(model_config, dict)
+            and model_config.get("name") == default_selection
+        ):
             return _require_positive_int(model_config, "max_tokens_context")
     raise ConfigError("model.default_selection must match a configured model name")
 
 
-def _template_fields(template: str) -> set[str]:
-    return {
-        field_name
-        for _, field_name, _, _ in Formatter().parse(template)
-        if field_name is not None
-    }
+def _template_fields(key: str, template: str) -> set[str]:
+    try:
+        return {
+            field_name
+            for _, field_name, _, _ in Formatter().parse(template)
+            if field_name is not None
+        }
+    except ValueError as error:
+        raise ConfigError(f"messages.{key} is an invalid template: {error}") from error
+
+
+def validate_model_config(config: dict) -> dict:
+    """Validate and return the model section of config.yaml."""
+    if not isinstance(config, dict):
+        raise ConfigError("config.yaml must contain a mapping")
+    model = _require_mapping(config, "model")
+    models = model.get("models")
+    if not isinstance(models, list) or not models:
+        raise ConfigError("model.models must contain at least one model")
+
+    model_names: set[str] = set()
+    for index, model_config in enumerate(models):
+        if not isinstance(model_config, dict):
+            raise ConfigError(f"model.models[{index}] must be a mapping")
+        name = _require_non_empty_str(
+            model_config, "name", f"model.models[{index}].name"
+        )
+        if name in model_names:
+            raise ConfigError(f"Duplicate model name: {name}")
+        model_names.add(name)
+        _require_positive_int(model_config, "max_tokens_context")
+        _require_positive_int(model_config, "max_tokens_output")
+        _require_finite_number(
+            model_config, "temperature", f"model {name} temperature", allow_zero=True
+        )
+
+    default_selection = model.get("default_selection")
+    if default_selection not in model_names:
+        raise ConfigError("model.default_selection must match a configured model name")
+    return model
 
 
 def validate_usage_stats_config(config: dict) -> dict:
@@ -154,7 +214,7 @@ def validate_usage_stats_config(config: dict) -> dict:
         )
     usage_stats = _require_mapping(config, "usage_stats")
     db_file = usage_stats.get("db_file")
-    if db_file is not None and (not isinstance(db_file, str) or not db_file):
+    if db_file is not None and (not isinstance(db_file, str) or not db_file.strip()):
         raise ConfigError("usage_stats.db_file must be a non-empty string or null")
     timezone = usage_stats.get("timezone")
     if db_file is not None or timezone is not None:
@@ -172,55 +232,23 @@ def validate_config(config: dict) -> None:
     if not isinstance(config, dict):
         raise ConfigError("config.yaml must contain a mapping")
 
-    model = _require_mapping(config, "model")
-    models = model.get("models")
-    if not isinstance(models, list) or not models:
-        raise ConfigError("model.models must contain at least one model")
-
+    model = validate_model_config(config)
     context_token_buffer = _require_positive_int(config, "context_token_buffer")
-    model_names: set[str] = set()
-    for index, model_config in enumerate(models):
-        if not isinstance(model_config, dict):
-            raise ConfigError(f"model.models[{index}] must be a mapping")
-        name = model_config.get("name")
-        if not isinstance(name, str) or not name:
-            raise ConfigError(f"model.models[{index}].name must be a non-empty string")
-        if name in model_names:
-            raise ConfigError(f"Duplicate model name: {name}")
-        model_names.add(name)
-
-        max_tokens_context = _require_positive_int(model_config, "max_tokens_context")
-        max_tokens_output = _require_positive_int(model_config, "max_tokens_output")
-        if max_tokens_output + context_token_buffer >= max_tokens_context:
-            raise ConfigError(
-                f"model {name} max_tokens_output plus context_token_buffer "
-                "must be smaller than max_tokens_context"
-            )
-        temperature = model_config.get("temperature")
+    for model_config in model["models"]:
         if (
-            not isinstance(temperature, int | float)
-            or isinstance(temperature, bool)
-            or temperature < 0
+            model_config["max_tokens_output"] + context_token_buffer
+            >= model_config["max_tokens_context"]
         ):
-            raise ConfigError(f"model {name} temperature must be a non-negative number")
-
-    default_selection = model.get("default_selection")
-    if default_selection not in model_names:
-        raise ConfigError("model.default_selection must match a configured model name")
+            raise ConfigError(
+                f"model {model_config['name']} max_tokens_output plus "
+                "context_token_buffer must be smaller than max_tokens_context"
+            )
 
     openai_config = _require_mapping(config, "openai")
-    if (
-        not isinstance(openai_config.get("base_url"), str)
-        or not openai_config["base_url"]
-    ):
-        raise ConfigError("openai.base_url is required")
-    timeout = openai_config.get("request_timeout_seconds")
-    if (
-        not isinstance(timeout, int | float)
-        or isinstance(timeout, bool)
-        or timeout <= 0
-    ):
-        raise ConfigError("openai.request_timeout_seconds must be a positive number")
+    _require_non_empty_str(openai_config, "base_url", "openai.base_url")
+    _require_finite_number(
+        openai_config, "request_timeout_seconds", "openai.request_timeout_seconds"
+    )
     max_retries = openai_config.get("max_retries")
     if (
         not isinstance(max_retries, int)
@@ -232,22 +260,17 @@ def validate_config(config: dict) -> None:
 
     logging_config = _require_mapping(config, "logging")
     parse_log_level(logging_config.get("log_level", "INFO"))
-    if (
-        not isinstance(logging_config.get("log_file"), str)
-        or not logging_config["log_file"]
-    ):
-        raise ConfigError("logging.log_file must be a non-empty string")
+    _require_non_empty_str(logging_config, "log_file", "logging.log_file")
 
     validate_usage_stats_config(config)
 
     runtime = _require_mapping(config, "runtime")
     for key in ("tiktoken_cache_dir", "token_encoding", "upload_dir"):
-        if not isinstance(runtime.get(key), str) or not runtime[key]:
-            raise ConfigError(f"runtime.{key} must be a non-empty string")
+        _require_non_empty_str(runtime, key, f"runtime.{key}")
     _require_positive_int(runtime, "max_concurrent_document_conversions")
     reasoning_effort = runtime.get("reasoning_effort_when_thinking_disabled")
     if reasoning_effort is not None and (
-        not isinstance(reasoning_effort, str) or not reasoning_effort
+        not isinstance(reasoning_effort, str) or not reasoning_effort.strip()
     ):
         raise ConfigError(
             "runtime.reasoning_effort_when_thinking_disabled must be a non-empty "
@@ -255,8 +278,7 @@ def validate_config(config: dict) -> None:
         )
 
     chat = _require_mapping(config, "chat")
-    if not isinstance(chat.get("app_name"), str) or not chat["app_name"]:
-        raise ConfigError("chat.app_name must be a non-empty string")
+    _require_non_empty_str(chat, "app_name", "chat.app_name")
 
     messages = _require_mapping(config, "messages")
     missing_messages = REQUIRED_MESSAGE_KEYS - set(messages)
@@ -264,13 +286,19 @@ def validate_config(config: dict) -> None:
         missing = ", ".join(sorted(missing_messages))
         raise ConfigError(f"messages is missing required keys: {missing}")
     for key in REQUIRED_MESSAGE_KEYS:
-        if not isinstance(messages[key], str) or not messages[key]:
-            raise ConfigError(f"messages.{key} must be a non-empty string")
+        _require_non_empty_str(messages, key, f"messages.{key}")
     for key, required_fields in REQUIRED_TEMPLATE_FIELDS.items():
-        missing_fields = required_fields - _template_fields(messages[key])
+        fields = _template_fields(key, messages[key])
+        missing_fields = required_fields - fields
         if missing_fields:
             missing = ", ".join(sorted(missing_fields))
             raise ConfigError(f"messages.{key} is missing template fields: {missing}")
+        unexpected_fields = fields - required_fields
+        if unexpected_fields:
+            unexpected = ", ".join(sorted(unexpected_fields))
+            raise ConfigError(
+                f"messages.{key} has unexpected template fields: {unexpected}"
+            )
 
     whitelist = config.get("file_format_whitelist")
     if not isinstance(whitelist, list) or not whitelist:
@@ -282,18 +310,33 @@ def validate_config(config: dict) -> None:
         raise ConfigError("file_format_whitelist entries must be file extensions")
 
 
+def _read_raw_config() -> dict:
+    config_path = PROJECT_ROOT / "config.yaml"
+    with config_path.open(encoding="utf-8") as config_file:
+        return yaml.safe_load(config_file)
+
+
 def load_config() -> dict:
     """Load and cache the repository's config.yaml file."""
     global _config_cache
     if _config_cache is None:
         load_dotenv(PROJECT_ROOT / ".env")
-        config_path = PROJECT_ROOT / "config.yaml"
-        with config_path.open(encoding="utf-8") as config_file:
-            loaded_config = yaml.safe_load(config_file)
+        loaded_config = _read_raw_config()
         apply_environment_overrides(loaded_config)
         validate_config(loaded_config)
         _config_cache = loaded_config
     return _config_cache
+
+
+def load_model_config() -> dict:
+    """Load and validate only the model section from config.yaml.
+
+    Avoids requiring API keys when Makefile helpers read the default model
+    name or context length.
+    """
+    if _config_cache is not None:
+        return _config_cache["model"]
+    return validate_model_config(_read_raw_config())
 
 
 def load_usage_stats_config() -> dict:
@@ -304,10 +347,7 @@ def load_usage_stats_config() -> dict:
     """
     if _config_cache is not None:
         return _config_cache["usage_stats"]
-    config_path = PROJECT_ROOT / "config.yaml"
-    with config_path.open(encoding="utf-8") as config_file:
-        loaded_config = yaml.safe_load(config_file)
-    return validate_usage_stats_config(loaded_config)
+    return validate_usage_stats_config(_read_raw_config())
 
 
 def get_custom_logger(

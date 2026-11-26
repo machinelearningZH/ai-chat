@@ -39,9 +39,7 @@ torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 filterwarnings = [
-    "error::RuntimeWarning",
-    "error::pytest.PytestUnraisableExceptionWarning",
-    "error::pytest.PytestUnhandledThreadExceptionWarning",
+    "error",
     'error:The `fitz` API is deprecated:FutureWarning:^fitz$',
     # Chainlit's Traceloop dependency still uses class-based Pydantic config.
     'ignore:^Support for class-based `config` is deprecated:pydantic.warnings.PydanticDeprecatedSince20:^traceloop\.sdk\.prompts\.model$',

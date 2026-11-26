@@ -7,21 +7,26 @@ import pytest
 
 from ai_chat import app
 from ai_chat.app import (
-    budget_document_tokens,
+    MESSAGES,
     build_context_window,
     calculate_input_token_limit,
     normalize_attachment_name,
     resolve_model_name,
 )
-from ai_chat.messages import (
-    DOCUMENT_FAILURE,
-    DOCUMENT_LIMIT_WARNING,
-    DOCUMENT_PARTIAL_SUCCESS,
-    DOCUMENT_SUCCESS,
-    LLM_ERROR,
-    MESSAGE_TOO_LARGE,
-)
 from ai_chat.usage_stats import UsageStats
+
+DOCUMENT_FAILURE = MESSAGES["document_failure"]
+DOCUMENT_LIMIT_WARNING = MESSAGES["document_limit_warning"]
+DOCUMENT_PARTIAL_SUCCESS = MESSAGES["document_partial_success"]
+DOCUMENT_SUCCESS = MESSAGES["document_success"]
+LLM_ERROR = MESSAGES["llm_error"]
+MESSAGE_TOO_LARGE = MESSAGES["message_too_large"]
+
+
+def only_day_counters(stats: UsageStats) -> dict[str, int]:
+    days, _ = stats.read_snapshot()
+    (counters,) = days.values()
+    return counters
 
 
 @pytest.fixture(autouse=True)
@@ -251,7 +256,7 @@ def test_on_message_stops_before_llm_when_current_message_is_too_large(
     chat.create.assert_not_called()
     assert chat.messages[0].sent == [MESSAGE_TOO_LARGE]
     assert session.values["past_content"] == [{"role": "system", "content": "system"}]
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["message_tokens"] > 0
     assert counters["message_too_large"] == 1
@@ -288,16 +293,6 @@ def test_context_retains_newest_complete_turns_without_mutating_history(
     assert result.current_message_fits is fits
     assert history == before
     assert counts == [2, 1, 2, 2, 2]
-
-
-@pytest.mark.parametrize(
-    ("candidate", "include", "next_tokens"),
-    [(9, True, 99), (10, True, 100), (11, False, 90)],
-)
-def test_document_budget_boundary(candidate, include, next_tokens) -> None:
-    decision = budget_document_tokens(90, candidate, 100)
-    assert decision.include is include
-    assert decision.next_tokens == next_tokens
 
 
 async def response_chunks(*contents):
@@ -371,7 +366,7 @@ def test_on_message_streams_and_commits_complete_turn(
     ]
     # Known cl100k_base examples, independent of the app's token-count helper.
     assert chat.session.values["past_content_token_counts"] == [1, 1, 2]
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["message_tokens"] == 1
     assert counters["response_tokens"] == 2
     assert counters.get("messages_with_thinking", 0) == int(thinking)
@@ -405,7 +400,7 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
         {"role": "system", "content": "system"}
     ]
     assert chat.session.values["past_content_token_counts"] == [1]
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["llm_errors"] == 1
     assert "responses" not in counters
@@ -419,7 +414,7 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
         "Hello",
     ]
     assert chat.messages[1].updated == ["Hello"]
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 2
     assert counters["chats_with_follow_up"] == 1
     assert counters["llm_errors"] == 1
@@ -475,7 +470,7 @@ def test_attachment_budget_is_cumulative_and_skipped_file_does_not_consume_it(
     tmp_path, monkeypatch, chat
 ) -> None:
     # Minimal configured wrapper makes these known tokenizer examples cost 1, 3, 1, 1.
-    monkeypatch.setattr(app, "DOCUMENT_ITEM_TEMPLATE", "{content}")
+    monkeypatch.setitem(app.MESSAGES, "document_item_template", "{content}")
     monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path)
     elements = []
     for name, content in [
@@ -575,7 +570,7 @@ def test_on_message_counts_each_chat_once(chat, app_stats) -> None:
     for _ in range(3):
         asyncio.run(app.on_message(SimpleNamespace(content="question", elements=[])))
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 3
     assert counters["messages_with_thinking"] == 3
     assert counters["chats"] == 1
@@ -593,7 +588,7 @@ def test_on_message_counts_when_a_chat_reaches_a_length(chat, app_stats) -> None
                 app.on_message(SimpleNamespace(content="question", elements=[]))
             )
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 12
     assert counters["chats"] == 2
     assert counters["chats_with_follow_up"] == 1
@@ -620,7 +615,7 @@ def test_on_message_counts_uploaded_documents(
         )
     )
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages_with_documents"] == 1
     assert counters["chats_with_documents"] == 1
     assert counters["documents_skipped"] == 1
@@ -638,7 +633,7 @@ def test_on_message_counts_and_times_successful_responses(
 
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["responses"] == 1
     assert counters["response_ms"] == 1500
     assert counters["response_stream_ms"] == 1500
@@ -664,7 +659,7 @@ def test_on_message_counts_trimmed_history(chat, app_stats) -> None:
 
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["history_trimmed"] == 1
     assert counters["responses"] == 1
     assert "message_too_large" not in counters
@@ -676,7 +671,7 @@ def test_on_message_counts_an_unexpected_model_error(chat, app_stats) -> None:
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
     assert chat.messages[0].updated == [LLM_ERROR]
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["llm_errors"] == 1
     assert "responses" not in counters
@@ -776,7 +771,7 @@ def test_on_message_counts_a_stopped_answer_as_a_message_without_a_response(
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert "responses" not in counters
     assert "llm_errors" not in counters
@@ -785,7 +780,7 @@ def test_on_message_counts_a_stopped_answer_as_a_message_without_a_response(
 def test_save_usage_does_not_let_an_unknown_metric_break_a_chat(app_stats) -> None:
     asyncio.run(app.save_usage({"messages": 1, "mesages": 1}))
 
-    assert app_stats.read() == {}
+    assert app_stats.read_snapshot() == ({}, {})
 
 
 def test_on_message_uses_single_end_timestamp_for_response_and_stream_duration(
@@ -801,7 +796,7 @@ def test_on_message_uses_single_end_timestamp_for_response_and_stream_duration(
 
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["response_ms"] == 1000
     assert counters["response_stream_ms"] == 500
 
@@ -850,7 +845,7 @@ def test_on_message_counts_file_types_for_failed_and_skipped_documents(
         )
     )
 
-    (counters,) = app_stats.read().values()
+    counters = only_day_counters(app_stats)
     assert counters["documents_failed"] == 1
     assert counters["documents_skipped"] == 1
     assert counters["file_type_py"] == 1
@@ -883,3 +878,204 @@ def test_process_attachments_does_not_mislog_stat_error_as_outside_upload_dir(
     assert "attachment_outside_upload_directory" not in warnings
     assert result.failed_count == 1
     assert result.skipped_count == 0
+
+
+def test_accepted_chainlit_extensions_all_route_to_supported_handlers() -> None:
+    import tomllib
+    from pathlib import Path
+
+    from docling.datamodel.base_models import FormatToExtensions
+
+    repo_root = Path(__file__).resolve().parents[2]
+    chainlit_config = tomllib.loads(
+        (repo_root / ".chainlit" / "config.toml").read_text(encoding="utf-8")
+    )
+    accept = chainlit_config["features"]["spontaneous_file_upload"]["accept"]
+    accepted = {ext.lower() for extensions in accept.values() for ext in extensions}
+    docling_exts = {
+        f".{ext.lower()}"
+        for extensions in FormatToExtensions.values()
+        for ext in extensions
+    }
+    supported = app.FILE_FORMAT_WHITELIST | {".pdf"} | docling_exts
+    assert accepted <= supported
+    assert {".md", ".markdown", ".mdown", ".mkd"} <= app.FILE_FORMAT_WHITELIST
+
+
+def test_process_attachments_cleans_up_remaining_files_when_cancelled(
+    tmp_path, monkeypatch, chat
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"%PDF-1.4")
+    second.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+
+    async def cancel_first(_extractor, _path):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(app, "run_document_conversion", cancel_first)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            app.process_attachments(
+                [
+                    SimpleNamespace(path=str(first), name="first.pdf"),
+                    SimpleNamespace(path=str(second), name="second.pdf"),
+                ],
+                max_tokens=1000,
+            )
+        )
+
+    assert not first.exists()
+    assert not second.exists()
+
+
+def test_process_attachments_skips_directory_inside_upload_dir(
+    tmp_path, monkeypatch, chat
+) -> None:
+    subdir = tmp_path / "nested"
+    subdir.mkdir()
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(subdir), name="nested")], max_tokens=1000
+        )
+    )
+
+    assert result.skipped_count == 1
+    assert result.failed_count == 0
+    assert subdir.is_dir()
+
+
+def test_process_attachments_budgets_error_templates_so_message_fits(
+    tmp_path, monkeypatch, chat, app_stats
+) -> None:
+    valid = tmp_path / "valid.txt"
+    valid.write_text("Hello", encoding="utf-8")
+    broken = tmp_path / "broken.txt"
+    broken.write_bytes(b"\xff")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setitem(app.MESSAGES, "document_item_template", "{content}")
+    monkeypatch.setitem(
+        app.MESSAGES, "document_error_template", "ERR " * 20 + "{filename}"
+    )
+
+    empty_prompt = app.MESSAGES["document_processing_template"].format(
+        instructions="Hi",
+        documents="",
+        horizontal_line=app.HORIZONTAL_LINE,
+    )
+    tight_budget = app.count_tokens("system") + app.count_tokens(empty_prompt) + 2
+    chat.session.values.update(
+        {
+            "past_content": [{"role": "system", "content": "system"}],
+            "past_content_token_counts": [app.count_tokens("system")],
+            "max_tokens": tight_budget,
+        }
+    )
+    chat.create.side_effect = None
+    chat.create.return_value = response_chunks("Done")
+
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="Hi",
+                elements=[
+                    SimpleNamespace(path=str(valid), name="valid.txt"),
+                    SimpleNamespace(path=str(broken), name="broken.txt"),
+                ],
+            )
+        )
+    )
+
+    chat.create.assert_awaited_once()
+    assert MESSAGE_TOO_LARGE not in [m.content for m in chat.messages]
+
+
+def test_on_message_serializes_overlapping_turns_without_losing_history(
+    chat, app_stats
+) -> None:
+    chat.session.values.update(
+        {
+            "past_content": [{"role": "system", "content": "system"}],
+            "past_content_token_counts": [1],
+            "max_tokens": 100,
+        }
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def complete(**kwargs):
+        last_user = kwargs["messages"][-1]["content"]
+        if last_user == "first":
+
+            async def slow_stream():
+                first_started.set()
+                await release_first.wait()
+                async for chunk in response_chunks("reply-1"):
+                    yield chunk
+
+            return slow_stream()
+        return response_chunks("reply-2")
+
+    chat.create.side_effect = complete
+
+    async def run_overlapping() -> None:
+        task1 = asyncio.create_task(
+            app.on_message(SimpleNamespace(content="first", elements=[]))
+        )
+        await first_started.wait()
+        task2 = asyncio.create_task(
+            app.on_message(SimpleNamespace(content="second", elements=[]))
+        )
+        await asyncio.sleep(0.01)
+        release_first.set()
+        await asyncio.gather(task1, task2)
+
+    asyncio.run(run_overlapping())
+
+    assert [item["content"] for item in chat.session.values["past_content"]] == [
+        "system",
+        "first",
+        "reply-1",
+        "second",
+        "reply-2",
+    ]
+
+
+def test_document_conversions_use_bounded_dedicated_thread_pool(
+    tmp_path, monkeypatch, chat
+) -> None:
+    import time
+
+    seen_threads: set[int] = set()
+    lock = threading.Lock()
+
+    def fake_extract(_path):
+        with lock:
+            seen_threads.add(threading.get_ident())
+        time.sleep(0.02)
+        return "extracted"
+
+    monkeypatch.setattr(app, "extract_with_docling", fake_extract)
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+
+    files = []
+    for index in range(8):
+        path = tmp_path / f"doc_{index}.docx"
+        path.write_text("dummy", encoding="utf-8")
+        files.append(SimpleNamespace(path=str(path), name=path.name))
+
+    async def run_with_pool_noise() -> None:
+        noise = [asyncio.to_thread(time.sleep, 0.05) for _ in range(8)]
+        conversions = [
+            app.process_attachments([element], max_tokens=1000) for element in files
+        ]
+        await asyncio.gather(*noise, *conversions)
+
+    asyncio.run(run_with_pool_noise())
+
+    limit = app.runtime_config["max_concurrent_document_conversions"]
+    assert 1 <= len(seen_threads) <= limit

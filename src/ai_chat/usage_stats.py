@@ -16,6 +16,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
+from threading import Lock
 from zoneinfo import ZoneInfo
 
 from ai_chat.config import (
@@ -140,35 +141,34 @@ class UsageStats:
         self._db_file = db_file
         self.timezone = ZoneInfo(timezone)
         self._schema_ready = False
+        self._init_lock = Lock()
 
     @property
     def enabled(self) -> bool:
         """Return whether usage statistics storage is enabled."""
         return self._db_file is not None
 
-    @contextmanager
-    def _connect_write(self) -> Iterator[sqlite3.Connection]:
+    def _needs_schema_init(self) -> bool:
         assert self._db_file is not None
-        self._db_file.parent.mkdir(parents=True, exist_ok=True)
-        needs_init = (
+        return (
             not self._schema_ready
             or not self._db_file.is_file()
             or self._db_file.stat().st_size == 0
         )
-        with closing(sqlite3.connect(self._db_file)) as connection:
-            if needs_init:
-                connection.execute("PRAGMA journal_mode=WAL")
-                connection.executescript(_CREATE_TABLES)
-                self._schema_ready = True
-            with connection:
-                yield connection
 
     @contextmanager
-    def _connect_read(self) -> Iterator[sqlite3.Connection]:
+    def _connect_write(self) -> Iterator[sqlite3.Connection]:
         assert self._db_file is not None
-        uri = f"{self._db_file.resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as connection:
-            yield connection
+        self._db_file.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self._db_file)) as connection:
+            if self._needs_schema_init():
+                with self._init_lock:
+                    if self._needs_schema_init():
+                        connection.execute("PRAGMA journal_mode=WAL")
+                        connection.executescript(_CREATE_TABLES)
+                        self._schema_ready = True
+            with connection:
+                yield connection
 
     def _has_readable_db(self) -> bool:
         return (
@@ -176,6 +176,19 @@ class UsageStats:
             and self._db_file.is_file()
             and self._db_file.stat().st_size > 0
         )
+
+    def _read_snapshot_from_uri(
+        self, uri: str, since: str
+    ) -> tuple[dict[str, dict[str, int]], dict[int, int]]:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.execute("BEGIN")
+            days: dict[str, dict[str, int]] = {}
+            for day, metric, value in connection.execute(
+                _READ, (PERIOD_LENGTHS["day"], since)
+            ):
+                days.setdefault(day, {})[metric] = value
+            hours = dict(connection.execute(_READ_MESSAGE_HOURS, (since,)))
+        return days, hours
 
     def today(self) -> date:
         """Return the current day in the stats time zone."""
@@ -226,38 +239,26 @@ class UsageStats:
         except (OSError, sqlite3.Error):
             get_custom_logger().exception("usage_stats_write_failed")
 
-    def _query(self, sql: str, parameters: tuple) -> list[tuple]:
-        if not self._has_readable_db():
-            return []
-        with self._connect_read() as connection:
-            return connection.execute(sql, parameters).fetchall()
-
-    def read(self, by: str = "month", since: str = "") -> dict[str, dict[str, int]]:
-        """Return {period: {metric: value}} per month or day, from an ISO day on."""
-        counters: dict[str, dict[str, int]] = {}
-        for period, metric, value in self._query(_READ, (PERIOD_LENGTHS[by], since)):
-            counters.setdefault(period, {})[metric] = value
-        return counters
-
-    def read_message_hours(self, since: str = "") -> dict[int, int]:
-        """Return {hour of day: messages}, from an ISO day on."""
-        return dict(self._query(_READ_MESSAGE_HOURS, (since,)))
-
     def read_snapshot(
         self, since: str = ""
     ) -> tuple[dict[str, dict[str, int]], dict[int, int]]:
         """Return daily counters and message hours from one read-only snapshot."""
         if not self._has_readable_db():
             return {}, {}
-        with self._connect_read() as connection:
-            connection.execute("BEGIN")
-            days: dict[str, dict[str, int]] = {}
-            for day, metric, value in connection.execute(
-                _READ, (PERIOD_LENGTHS["day"], since)
-            ):
-                days.setdefault(day, {})[metric] = value
-            hours = dict(connection.execute(_READ_MESSAGE_HOURS, (since,)))
-        return days, hours
+        assert self._db_file is not None
+        resolved = self._db_file.resolve()
+        try:
+            return self._read_snapshot_from_uri(f"{resolved.as_uri()}?mode=ro", since)
+        except sqlite3.OperationalError:
+            # Reading a WAL database from a read-only directory fails because
+            # SQLite cannot create the -shm file. Fall back to immutable=1 only
+            # when no uncheckpointed WAL data exists.
+            wal_path = Path(f"{resolved}-wal")
+            if wal_path.exists() and wal_path.stat().st_size > 0:
+                raise
+            return self._read_snapshot_from_uri(
+                f"{resolved.as_uri()}?mode=ro&immutable=1", since
+            )
 
 
 def load_usage_stats() -> UsageStats:

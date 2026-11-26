@@ -1,11 +1,11 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
-CONFIG_CONTEXT_LENGTH = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync python -c 'from ai_chat.config import default_model_context_length, load_config; print(default_model_context_length(load_config()))')
-CONFIG_MODEL_NAME = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync python -c 'from ai_chat.config import load_config; print(load_config()["model"]["default_selection"])')
+CONFIG_CONTEXT_LENGTH = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync python -c 'from ai_chat.config import default_model_context_length, load_model_config; print(default_model_context_length({"model": load_model_config()}))')
+CONFIG_MODEL_NAME = $(shell UV_NO_CACHE=1 PYTHONPATH=src uv run --no-sync python -c 'from ai_chat.config import load_model_config; print(load_model_config()["default_selection"])')
 OLLAMA_CONTEXT_LENGTH ?= $(CONFIG_CONTEXT_LENGTH)
 COMPOSE = OLLAMA_CONTEXT_LENGTH=$(OLLAMA_CONTEXT_LENGTH) docker compose -f compose.yaml
-COMPOSE_STATS = OLLAMA_CONTEXT_LENGTH=1 docker compose -f compose.yaml
+COMPOSE_NO_CONTEXT = OLLAMA_CONTEXT_LENGTH=1 docker compose -f compose.yaml
 NVIDIA_COMPOSE = $(COMPOSE) -f compose.nvidia.yaml
 AMD_COMPOSE = $(COMPOSE) -f compose.amd.yaml
 OLLAMA_VERSION ?= 0.32.0
@@ -14,6 +14,7 @@ APP_MODEL_NAME ?= $(CONFIG_MODEL_NAME)
 SERVER_HOST ?= 127.0.0.1
 VLLM_PORT ?= 8001
 LLAMACPP_PORT ?= 8002
+STATS_SOURCE ?= auto
 STATS_ARGS = $(if $(SINCE),--since "$(SINCE)") $(if $(BY),--by "$(BY)") \
 	$(if $(filter-out 0 false FALSE no NO,$(DETAILED)),--detailed)
 
@@ -25,7 +26,7 @@ export OLLAMA_VERSION
 help: ## Show the available commands.
 	@printf '%s\n' \
 		'make setup          Install the Python environment' \
-		'make update-packages  Upgrade, test, commit, and push the lockfile' \
+		'make update-packages  Upgrade, check, commit, and push the lockfile' \
 		'make test           Run the test suite' \
 		'make lint           Run the Ruff linter' \
 		'make format         Format code with Ruff' \
@@ -47,21 +48,23 @@ help: ## Show the available commands.
 		'make down           Stop the Compose stack' \
 		'' \
 		'Add UP_FLAGS=-d to a Compose start target to run in the background.' \
-		'Add SINCE=YYYY-MM-DD to filter dates or BY=day to group by day.' \
+		'Add SINCE=YYYY-MM-DD, BY=day, or STATS_SOURCE=native|compose to make stats.' \
 		'Compose context length follows config.yaml; override with OLLAMA_CONTEXT_LENGTH=…'
 
 setup: ## Install the Python environment.
 	uv sync
 
-update-packages: ## Upgrade dependencies and push the lockfile from a clean branch.
-	@git symbolic-ref --quiet HEAD >/dev/null || { \
-		echo 'Run update-packages with a branch checked out.' >&2; exit 1; \
+update-packages: ## Upgrade dependencies, verify checks, and push the lockfile from a feature branch.
+	@branch=$$(git symbolic-ref --quiet --short HEAD) && [ "$$branch" != main ] || { \
+		echo 'Run update-packages on a branch other than main.' >&2; exit 1; \
 	}
 	@changes=$$(git status --porcelain --untracked-files=no) && [ -z "$$changes" ] || { \
 		echo 'Commit or stash tracked changes before running update-packages.' >&2; exit 1; \
 	}
 	uv lock --upgrade
 	uv sync
+	uv run ruff format --check .
+	uv run ruff check .
 	PYTHONWARNINGS=error uv run pytest
 	@if git diff --quiet HEAD -- uv.lock; then \
 		echo 'Dependencies are up to date.'; \
@@ -123,26 +126,47 @@ stack-amd: ## Run the app and AMD ROCm Ollama in Docker on Linux.
 model: ## Pull MODEL into Compose Ollama, starting the service if needed.
 	@if [ -z "$(MODEL)" ]; then echo 'Usage: make model MODEL=<model-name>'; exit 2; fi
 	$(COMPOSE) up --detach ollama
-	$(COMPOSE) exec ollama ollama pull "$(MODEL)"
+	$(COMPOSE_NO_CONTEXT) exec ollama ollama pull "$(MODEL)"
 
 logs: ## Follow Compose logs.
-	$(COMPOSE) logs --follow
+	$(COMPOSE_NO_CONTEXT) logs --follow
 
 ps: ## Show Compose service status.
-	$(COMPOSE) ps
+	$(COMPOSE_NO_CONTEXT) ps
 
 stats: ## Show usage statistics of the Compose app or volume, else of the native app.
-	@if [ -n "$$($(COMPOSE_STATS) ps --quiet app 2>/dev/null)" ]; then \
-		echo 'Source: Compose app'; \
-		$(COMPOSE_STATS) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
-	elif docker volume inspect ai-chat_usage-stats >/dev/null 2>&1 \
-		&& docker image inspect "ai-chat:$${AI_CHAT_TAG:-latest}" >/dev/null 2>&1; then \
-		echo 'Source: Compose volume (app is stopped)'; \
-		$(COMPOSE_STATS) run --rm --no-deps -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
-	else \
-		echo 'Source: native app'; \
-		PYTHONPATH=src uv run --no-sync python -m ai_chat.usage_report $(STATS_ARGS); \
-	fi
+	@case "$(STATS_SOURCE)" in \
+		native) \
+			echo 'Source: native app'; \
+			PYTHONPATH=src uv run --no-sync python -m ai_chat.usage_report $(STATS_ARGS); \
+			;; \
+		compose) \
+			if [ -n "$$($(COMPOSE_NO_CONTEXT) ps --quiet app 2>/dev/null)" ]; then \
+				echo 'Source: Compose app'; \
+				$(COMPOSE_NO_CONTEXT) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+			else \
+				echo 'Source: Compose volume (app is stopped)'; \
+				$(COMPOSE_NO_CONTEXT) run --rm --no-deps -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+			fi; \
+			;; \
+		auto) \
+			if [ -n "$$($(COMPOSE_NO_CONTEXT) ps --quiet app 2>/dev/null)" ]; then \
+				echo 'Source: Compose app'; \
+				$(COMPOSE_NO_CONTEXT) exec -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+			elif docker volume inspect ai-chat_usage-stats >/dev/null 2>&1 \
+				&& docker image inspect "ai-chat:$${AI_CHAT_TAG:-latest}" >/dev/null 2>&1; then \
+				echo 'Source: Compose volume (app is stopped)'; \
+				$(COMPOSE_NO_CONTEXT) run --rm --no-deps -T app env PYTHONPATH=src python -m ai_chat.usage_report $(STATS_ARGS); \
+			else \
+				echo 'Source: native app'; \
+				PYTHONPATH=src uv run --no-sync python -m ai_chat.usage_report $(STATS_ARGS); \
+			fi; \
+			;; \
+		*) \
+			echo "Invalid STATS_SOURCE='$(STATS_SOURCE)' (expected auto, native, or compose)." >&2; \
+			exit 2; \
+			;; \
+	esac
 
 down: ## Stop the Compose stack and keep models and usage statistics.
-	$(COMPOSE) down
+	$(COMPOSE_NO_CONTEXT) down

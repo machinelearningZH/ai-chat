@@ -248,10 +248,13 @@ def test_custom_logger_sends_errors_to_stderr_as_well(tmp_path, capsys) -> None:
     log_file = tmp_path / "app.log"
     logger = get_custom_logger("test_errors_to_stderr", log_file)
 
-    logger.info("routine_event")
-    logger.error("write_failed")
-    for handler in logger.handlers:
-        handler.close()
+    try:
+        logger.info("routine_event")
+        logger.error("write_failed")
+    finally:
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
 
     stderr = capsys.readouterr().err
     assert json.loads(stderr)["message"] == "write_failed"
@@ -375,3 +378,73 @@ def test_load_config_can_retry_after_invalid_configuration(config_file) -> None:
         load_config()
     config_file.write_text(yaml.safe_dump(make_config()), encoding="utf-8")
     assert load_config()["model"]["default_selection"] == "local-model"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_validate_config_rejects_non_finite_temperature_and_timeout(
+    value: float,
+) -> None:
+    config = make_config()
+    config["model"]["models"][0]["temperature"] = value
+    with pytest.raises(ConfigError, match="temperature"):
+        validate_config(config)
+
+    config = make_config()
+    config["openai"]["request_timeout_seconds"] = value
+    with pytest.raises(ConfigError, match="request_timeout_seconds"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("template", "pattern"),
+    [
+        ("{element_name} {typo}", "unexpected template fields"),
+        ("{element_name} {broken", "invalid template"),
+    ],
+)
+def test_validate_config_rejects_unexpected_and_malformed_template_fields(
+    template: str, pattern: str
+) -> None:
+    config = make_config()
+    config["messages"]["document_limit_warning"] = template
+
+    with pytest.raises(ConfigError, match=pattern):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("openai", "base_url"),
+        ("logging", "log_file"),
+        ("usage_stats", "db_file"),
+        ("runtime", "upload_dir"),
+        ("runtime", "reasoning_effort_when_thinking_disabled"),
+        ("chat", "app_name"),
+        ("messages", "welcome"),
+    ],
+)
+def test_validate_config_rejects_whitespace_only_strings(
+    section: str, key: str
+) -> None:
+    config = make_config()
+    config[section][key] = "   \n  "
+
+    with pytest.raises(ConfigError):
+        validate_config(config)
+
+
+def test_load_model_config_does_not_require_api_key(config_file, monkeypatch) -> None:
+    import yaml
+
+    from ai_chat.config import load_model_config
+
+    settings = make_config()
+    settings["openai"]["base_url"] = "https://api.example.test/v1"
+    config_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    monkeypatch.delenv("AI_CHAT_API_KEY", raising=False)
+
+    loaded = load_model_config()
+
+    assert loaded["default_selection"] == "local-model"
+    assert default_model_context_length({"model": loaded}) == 4096
