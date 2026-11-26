@@ -1,7 +1,7 @@
 publiccodeYmlVersion: 0.5.0
 name: Local AI Chat
 url: https://github.com/machinelearningZH/ai-chat
-softwareVersion: "0.4.2"
+softwareVersion: "0.5.0"
 releaseDate: 2026-11-26
 platforms:
   - windows
