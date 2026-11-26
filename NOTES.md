@@ -1,18 +1,14 @@
 # Maintenance notes
 
-- A chat counts when its first message arrives. Later chat totals use the same
-  Chainlit session, which is kept for 60 seconds after a disconnect. Counting
-  at disconnect would count the same chat again after a reconnect.
-- A message counts before the model request. A stopped reply therefore counts
-  as a message without a completed reply or a model error. The report includes
-  it in "Not answered".
-- The app checks that it can write usage statistics before serving the chat.
-  Later write failures go to the app log so a storage problem does not discard
-  an answer. The report opens the database read-only and can run without model
-  credentials.
-- The report counts waiting for the first reply text separately from the time
-  spent streaming the rest. The speed figure divides all reply tokens by the
-  time from the first reply text to the end.
-- In test setup files, import the app inside fixtures. Importing it when
-  pytest first loads those files can read the developer's config and
-  credentials before pytest sets up its temporary environment.
+## Usage statistics
+
+- Count a chat on its first message. Chainlit can reuse the session after a
+  reconnect, so counting disconnects would inflate chat totals. Chat-length
+  counters record when each threshold is reached, which can fall on a later
+  day than the first message.
+- Count the message before requesting a reply. A stopped reply contributes to
+  “Not answered” without adding a completed reply or model error. The report
+  measures streaming speed from the first reply text to the end of the stream.
+- The app checks write access at import because Chainlit can continue serving
+  after a startup hook fails. Later storage errors are logged so the chat can
+  continue. The report uses a read-only snapshot and runs without model keys.

@@ -4,15 +4,16 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](pyproject.toml)
 [![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-green.svg)](pyproject.toml)
 
-Chat with a model you run yourself. Attach documents to ask questions about them,
-summarize them, or pull out specific information. The app uses Chainlit for the
-chat interface and works with Ollama, vLLM, llama.cpp, and other servers that
-support the OpenAI chat completions API.
+Local AI Chat is a Chainlit app for chatting with a model you host yourself.
+Attach documents to ask questions, summarize them, or extract information. The
+app works with Ollama, vLLM, llama.cpp, and other servers that support the
+OpenAI chat completions API.
 
 ## Get started with Ollama
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and start
-[Ollama](https://ollama.com/). The app uses Python 3.13.
+You need Python 3.13, `make`, and a running Ollama server. Use `uv` to install
+the locked Python dependencies. [uv installation](https://docs.astral.sh/uv/getting-started/installation/) ·
+[Ollama](https://ollama.com/)
 
 ```sh
 git clone https://github.com/machinelearningZH/ai-chat
@@ -22,69 +23,62 @@ ollama pull hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k
 make run-native
 ```
 
-Open <http://localhost:8000>. The app allows 100,000 tokens for the default
-model's conversation and reply combined. To use the full limit, set
-`OLLAMA_CONTEXT_LENGTH=100000` in the environment that starts Ollama. If you
-have less memory, choose lower limits in both Ollama and
-[config.yaml](config.yaml), leaving room for the reply.
+Open <http://localhost:8000>. To match the app's default 100,000-token context
+window, start Ollama with `OLLAMA_CONTEXT_LENGTH=100000`. For lower memory use,
+reduce Ollama's context size and the app's `max_tokens_context` together. Set
+`max_tokens_output` to leave room for the prompt and the context buffer.
+[config.yaml](config.yaml)
 
 ## Use the chat
 
-Ask a question and, if needed, attach up to 12 files to a message. Each file
-can be up to 20 MB. The chat accepts PDF, Word, Excel, PowerPoint, CSV, HTML,
-plain text, Markdown, Python, R, and R Markdown. PDF import reads existing text,
-so scanned pages need text recognition before you upload them.
-
-The app skips files if their text would exceed the model's limit. In long
-chats, it drops older turns from what it sends with your next message.
-You can change models in the chat settings and turn on Thinking Mode if your
-model server supports it.
+Attach PDFs with selectable text, Office documents, or text and code files.
+The app skips attachments that exceed the input budget and drops older turns
+from long chats when building the next request. Use chat settings to pick a
+model and toggle Thinking Mode. [Upload guide](chainlit.md)
 
 ## Configure the app
 
-- In [config.yaml](config.yaml), set the model names and limits under `model`,
-  and edit the prompts and chat messages under `messages`. Restart the app
-  after editing the file.
-- Set `openai.base_url` or override it with `AI_CHAT_BASE_URL`. For a server
-  that requires a key, set `AI_CHAT_API_KEY` in your environment or in the
-  repository's ignored `.env` file. The default setup supplies a dummy key for
-  localhost. Other addresses require a key value.
-- In [.chainlit/config.toml](.chainlit/config.toml), set the upload limits,
-  accepted formats, and interface language. Add the URL users will open to
-  `allow_origins` if you use a different host or port.
-- Chainlit telemetry is off by default. The app sends chat text and extracted
-  document text to the configured model server. Run both on your own
-  infrastructure to keep those requests there. The app has no built-in sign-in.
+- Set model names and token limits under `model`, prompts and chat copy under
+  `messages`, and the model server URL under `openai.base_url`. Restart the
+  app after editing settings. [config.yaml](config.yaml)
+- Override the model server URL with `AI_CHAT_BASE_URL`. Set `AI_CHAT_API_KEY`
+  in the environment or the repository's ignored `.env` file. The default
+  dummy key applies to loopback addresses. Non-loopback URLs require a key
+  value.
+- Set upload limits, allowed types, and the Chainlit interface language in
+  `.chainlit/config.toml`. Add the browser origin to `allow_origins` if you
+  change the app host or port. [Chainlit settings](.chainlit/config.toml)
 
-For a configured server other than local Ollama, start the app with
-`uv run chainlit run src/app.py`.
+Start the app with `uv run chainlit run src/app.py` to use the configured
+server URL. The app sends chat text and extracted document text to that server.
+Chainlit telemetry is disabled. The app has no built-in sign-in.
 
 ### Use vLLM or llama.cpp
 
-Install [vLLM](https://docs.vllm.ai/en/latest/getting_started/installation/) or
-[llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
-separately. Start the server and then run the matching app command in another
-terminal.
+Install the model server separately. Run the matching app command in another
+terminal once the server is ready.
+[vLLM installation](https://docs.vllm.ai/en/latest/getting_started/installation/) ·
+[llama.cpp build guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
 
 | Server    | Start the server                                | Start the app       |
 | --------- | ----------------------------------------------- | ------------------- |
 | vLLM      | `make serve-vllm MODEL=google/gemma-3-4b-it`    | `make run-vllm`     |
 | llama.cpp | `make serve-llamacpp MODEL=/path/to/model.gguf` | `make run-llamacpp` |
 
-The helpers serve the model under the default name in `config.yaml`. If you
-set `APP_MODEL_NAME`, use the same name in `model.default_selection` and in
-the model list. Set the app's context and answer limits within the limits
-supported by the server and model.
+The helpers use the default model name and context size from `config.yaml`.
+Adjust the context and output limits to fit the model and hardware. If you
+override `APP_MODEL_NAME`, use the same name in the app's model list and select
+it in the app. If the server rejects `reasoning_effort`, set
+`runtime.reasoning_effort_when_thinking_disabled` to `null`. [config.yaml](config.yaml)
 
 vLLM uses localhost port 8001 and llama.cpp uses 8002. To change a port, pass
-`VLLM_PORT` or `LLAMACPP_PORT` to both commands. For server-specific options,
-run the helpers in [scripts/](scripts/) directly. If your server rejects
-`reasoning_effort`, set `runtime.reasoning_effort_when_thinking_disabled`
-to `null` in `config.yaml`.
+`VLLM_PORT` or `LLAMACPP_PORT` to both commands. Run the shell helpers directly
+to pass server-specific arguments. [Server scripts](scripts/)
 
 ## Run with Docker Compose
 
-Run `uv sync --locked` first so Make can read the model settings.
+Install Docker Compose and run `uv sync --locked` so Make can load the app
+settings.
 
 | Command             | Where Ollama runs                                    |
 | ------------------- | ---------------------------------------------------- |
@@ -93,47 +87,46 @@ Run `uv sync --locked` first so Make can read the model settings.
 | `make stack-nvidia` | In Docker on Linux with the NVIDIA Container Toolkit |
 | `make stack-amd`    | In Docker on Linux with a supported AMD GPU and ROCm |
 
-On macOS, run Ollama on the host to use the Apple GPU. With `make app-host`,
-Ollama must accept connections from Docker. On Linux this usually means
-listening on an address reachable from the container.
+On macOS, run Ollama on the host for Apple GPU support. `make app-host` starts
+the app container and connects it to Ollama, which must listen on an address
+reachable from Docker.
 
-For example, start the CPU stack and download the model into it.
+For a containerized Ollama setup, download the model into the shared Ollama
+volume, then start the desired stack.
 
 ```sh
-make stack-cpu UP_FLAGS=-d
 make model MODEL=hf.co/unsloth/gemma-4-E2B-it-GGUF:q6_k
+make stack-cpu UP_FLAGS=-d
 ```
 
-Open <http://localhost:8000>. Use `AI_CHAT_PORT` to change the host port and
-`OLLAMA_CONTEXT_LENGTH` to change Ollama's context size. By default,
-Compose uses the configured context size of the default model. `make logs`
-shows service logs, and `make down` stops the stack while keeping downloaded
-models and usage statistics. Run `make help` for all commands.
+Open <http://localhost:8000>. Set `AI_CHAT_PORT` to change the host port.
+Compose uses the default model's context size unless you set
+`OLLAMA_CONTEXT_LENGTH`. `make down` stops the stack and preserves its model
+and usage volumes. Run `make help` for all commands.
 
-For a direct Docker deployment, build with `make build`. The image serves the
-app on port 8000 as user ID 10001. Mount your config at `/app/config.yaml` and
-set `AI_CHAT_BASE_URL` and `AI_CHAT_API_KEY` for your model server. Mount
-`/app/stats` to keep usage counts across container replacements and make it
-writable by the app user. Uploads are temporary. Mount the configured log path
-if you need logs across container replacements.
+For Docker without Compose, `make build` creates the `ai-chat` image. The
+container runs as UID 10001 and serves the app on port 8000. Mount your config at
+`/app/config.yaml`, set `AI_CHAT_BASE_URL` and `AI_CHAT_API_KEY`, and mount a writable
+`/app/stats` to persist usage counters. Mount the configured log path if you
+need to retain logs across container replacements.
 
 ## Read usage statistics
 
-The default config records totals for chats, messages, replies, and document
-imports in `stats/usage_stats.sqlite`. Reports also show activity by hour and
-weekday. The database stores counts and timings without chat text, file names,
-or user identifiers. `usage_stats.timezone` sets the reporting time zone.
+The app stores aggregate counts and timings for chats, messages, replies, and
+document imports in `stats/usage_stats.sqlite` by default. The database
+contains no chat text, filenames, or user identifiers. `usage_stats.timezone`
+sets the day and hour boundaries used to record activity.
 
 ```sh
 make stats                             # monthly overview
 make stats DETAILED=1                  # all counters
-make stats BY=day SINCE=2026-01-01      # daily report from this date
+make stats BY=day SINCE=2026-01-01      # daily overview starting on this date
 ```
 
-`make stats` looks for the Compose app or its stats volume first, then uses the
-local file. The `usage_stats` section is required. To turn counting off, set
-`db_file: null` in [config.yaml](config.yaml). When counting is enabled, the app
-must be able to write to the configured location at startup.
+`make stats` uses the running Compose app, or its stats volume if the app is
+stopped and the image is available. Otherwise it reads the native database.
+The app checks the database is writable at startup. Set `usage_stats.db_file`
+to `null` to disable counting. [config.yaml](config.yaml)
 
 ## Project team
 
@@ -142,8 +135,14 @@ must be able to write to the configured location at startup.
 
 ## Contributing
 
-Feedback and contributions are welcome. [Email us](mailto:datashop@statistik.zh.ch)
-or open an issue or pull request.
+Run `make check` before opening a pull request. It checks formatting, runs
+Ruff, and runs pytest. Use `make format` to apply formatting. The tests use an
+isolated configuration and a stand-in model client. CI also validates the
+Compose files and checks that the container serves the chat page.
+[CI workflow](.github/workflows/ci.yaml)
+
+For feedback, open an issue or email the project team at
+[datashop@statistik.zh.ch](mailto:datashop@statistik.zh.ch).
 
 ## License
 

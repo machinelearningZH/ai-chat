@@ -1,8 +1,8 @@
 publiccodeYmlVersion: 0.5.0
 name: Local AI Chat
 url: https://github.com/machinelearningZH/ai-chat
-softwareVersion: "0.3.0"
-releaseDate: 2026-07-17
+softwareVersion: "0.4.0"
+releaseDate: 2026-11-25
 platforms:
   - windows
   - mac
@@ -30,8 +30,8 @@ description:
       The app sends chat and extracted document text to the model server you
       configure. You can run both on your own infrastructure with Ollama, vLLM,
       or llama.cpp. You can change the models, prompts, and interface language.
-      The app also provides a local usage report with totals for chats, replies,
-      and document imports. You can turn usage counting off.
+      An optional local usage report shows aggregate chat activity, response
+      timings, and document import outcomes.
     documentation: https://github.com/machinelearningZH/ai-chat/blob/main/README.md
     features:
       - Chat with a model you host
