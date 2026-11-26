@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](pyproject.toml)
-[![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-green.svg)](pyproject.toml)
+[![Latest release](https://img.shields.io/github/v/release/machinelearningZH/ai-chat)](https://github.com/machinelearningZH/ai-chat/releases/latest)
 
 Local AI Chat is a Chainlit app for chatting with a model you host yourself.
 Attach documents to ask questions, summarize them, or extract information. The
