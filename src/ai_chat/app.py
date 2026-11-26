@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import local
 
 import chainlit as cl
-import fitz
+import pymupdf
 import tiktoken
 from chainlit.input_widget import Select, Switch
 from openai import AsyncOpenAI, OpenAIError
@@ -219,7 +219,7 @@ async def save_usage(usage: Mapping[str, int]) -> None:
 
 
 def extract_text_pymupdf(path: str | Path) -> str:
-    with fitz.open(path) as doc:
+    with pymupdf.open(path) as doc:
         return "\n".join(page.get_text("text") for page in doc).strip()
 
 

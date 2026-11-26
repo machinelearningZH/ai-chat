@@ -2,6 +2,7 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
+import pymupdf
 import pytest
 
 from ai_chat import app
@@ -450,10 +451,8 @@ def test_process_attachments_rejects_symlink_escape(
 def test_process_attachments_extracts_real_pdf_and_cleans_up(
     tmp_path, monkeypatch, chat
 ) -> None:
-    import fitz
-
     upload = tmp_path / "report.pdf"
-    with fitz.open() as document:
+    with pymupdf.open() as document:
         document.new_page().insert_text((72, 72), "First page evidence")
         document.new_page().insert_text((72, 72), "Second page evidence")
         document.save(upload)
@@ -508,11 +507,9 @@ def test_attachment_budget_is_cumulative_and_skipped_file_does_not_consume_it(
 def test_unreadable_pdf_reports_failure_and_is_deleted(
     tmp_path, monkeypatch, chat, empty
 ) -> None:
-    import fitz
-
     path = tmp_path / "broken.pdf"
     if empty:
-        with fitz.open() as document:
+        with pymupdf.open() as document:
             document.new_page()
             document.save(path)
     else:
