@@ -31,10 +31,10 @@ reduce Ollama's context size and the app's `max_tokens_context` together. Set
 
 ## Use the chat
 
-Attach PDFs with selectable text, Office documents, or text and code files.
-The app skips attachments that exceed the input budget and drops older turns
-from long chats when building the next request. Use chat settings to pick a
-model and toggle Thinking Mode. [Upload guide](chainlit.md)
+Attach PDFs with selectable text, Office documents, HTML, or text and code
+files. The app skips attachments that exceed the input budget and drops older
+turns from long chats when building the next request. Use chat settings to pick
+a model and toggle Thinking Mode. [Upload guide](chainlit.md)
 
 ## Configure the app
 
@@ -77,7 +77,7 @@ to pass server-specific arguments. [Server scripts](scripts/)
 
 ## Run with Docker Compose
 
-Install Docker Compose and run `uv sync --locked` so Make can load the app
+Install Docker Compose and run `uv sync --locked` so Make can load the model
 settings.
 
 | Command             | Where Ollama runs                                    |
@@ -118,15 +118,18 @@ contains no chat text, filenames, or user identifiers. `usage_stats.timezone`
 sets the day and hour boundaries used to record activity.
 
 ```sh
-make stats                             # monthly overview
-make stats DETAILED=1                  # all counters
+make stats                              # monthly overview
+make stats DETAILED=1                   # all counters
 make stats BY=day SINCE=2026-01-01      # daily overview starting on this date
+make stats STATS_SOURCE=native          # read the native database explicitly
 ```
 
-`make stats` uses the running Compose app, or its stats volume if the app is
-stopped and the image is available. Otherwise it reads the native database.
-The app checks the database is writable at startup. Set `usage_stats.db_file`
-to `null` to disable counting. [config.yaml](config.yaml)
+By default (`STATS_SOURCE=auto`), `make stats` uses the running Compose app, or
+its stats volume if the app is stopped and the image is available; otherwise it
+reads the native database. Pass `STATS_SOURCE=native` or `STATS_SOURCE=compose`
+to select a source explicitly. The app checks that the database is writable at
+startup. Set `usage_stats.db_file` to `null` to disable counting.
+[config.yaml](config.yaml)
 
 ## Project team
 
