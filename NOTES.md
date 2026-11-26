@@ -24,6 +24,9 @@
 - Dispatch attachment handling and file-type stats from the original uploaded
   filename suffix before falling back to Chainlit's saved disk path, because
   Chainlit derives stored temp extensions from browser-reported MIME types.
+- Limit Docling to the format selected by that suffix, with `.htm` and `.html`
+  both routed to HTML. Export compact tables to save context tokens and label
+  Excel worksheets so the model can attribute rows to the right sheet.
 - Validate uploaded paths off the event loop (resolved inside
   `runtime.upload_dir` and regular files only), enforce server-side `uploads`
   limits (`allowed_extensions`, `max_file_bytes`, `max_extracted_text_bytes`,

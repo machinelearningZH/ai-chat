@@ -2,11 +2,20 @@
 
 import multiprocessing
 from collections.abc import Callable
+from io import BytesIO
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 import pymupdf
+
+DOCLING_FORMATS_BY_EXTENSION = {
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".html": "html",
+    ".htm": "html",
+}
 
 
 class ExtractionLimitError(ValueError):
@@ -36,12 +45,38 @@ def extract_text_pymupdf(path: str | Path) -> str:
         return "\n".join(page.get_text("text") for page in doc).strip()
 
 
-def extract_with_docling(path: str | Path) -> str:
-    """Convert an Office or HTML document to Markdown using Docling."""
+def extract_with_docling(path: str | Path, *, expected_extension: str) -> str:
+    """Convert an Office or HTML upload to compact Markdown."""
+    format_name = DOCLING_FORMATS_BY_EXTENSION.get(expected_extension)
+    if format_name is None:
+        raise ValueError("Unsupported Docling upload extension")
+
+    from docling.datamodel.base_models import DocumentStream, InputFormat
     from docling.document_converter import DocumentConverter
 
-    doc_result = DocumentConverter().convert(path)
-    return doc_result.document.export_to_markdown()
+    expected_format = InputFormat(format_name)
+    # HTML fragments need an extension hint. Let Docling identify Office ZIPs
+    # from their contents, independent of the upload's declared or stored suffix.
+    name = "upload.html" if expected_format == InputFormat.HTML else "upload"
+    with BytesIO(Path(path).read_bytes()) as stream:
+        result = DocumentConverter(allowed_formats=[expected_format]).convert(
+            DocumentStream(name=name, stream=stream)
+        )
+    document = result.document
+    if expected_format == InputFormat.XLSX:
+        for sheet in document.groups:
+            if sheet.label != "sheet" or not sheet.children:
+                continue
+            sheet_name = " ".join(sheet.name.splitlines())
+            document.add_heading(
+                f"Tabellenblatt {sheet_name}",
+                level=2,
+                parent=sheet,
+                content_layer=sheet.content_layer,
+            )
+            # Docling appends headings. Put this one before the worksheet content.
+            sheet.children.insert(0, sheet.children.pop())
+    return document.export_to_markdown(compact_tables=True)
 
 
 def _stop_process(process: BaseProcess, kill_grace_seconds: float) -> None:

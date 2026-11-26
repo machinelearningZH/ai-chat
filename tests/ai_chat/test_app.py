@@ -477,6 +477,72 @@ def test_process_attachments_extracts_real_pdf_and_cleans_up(
     assert not upload.exists()
 
 
+@pytest.mark.parametrize("name", ["report.xlsx", "report.docx"])
+def test_process_attachments_checks_workbook_format_and_labels_worksheets(
+    tmp_path, monkeypatch, chat, name: str
+) -> None:
+    from openpyxl import Workbook
+
+    upload = tmp_path / "generated-upload-id"
+    workbook = Workbook()
+    workbook.active.title = "Zürich 2025"
+    workbook.active.append(["Region", "Total"])
+    workbook.active.append(["Alpha", 117])
+    workbook.create_sheet("Empty tab")
+    hidden = workbook.create_sheet("Hidden tab")
+    hidden.sheet_state = "hidden"
+    hidden.append(["Hidden data", 409])
+    current = workbook.create_sheet("Zürich 2026")
+    current.append(["Region", "Total"])
+    current.append(["Beta", 839])
+    workbook.save(upload)
+    workbook.close()
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path)
+
+    result = asyncio.run(
+        app.process_attachments([SimpleNamespace(path=str(upload), name=name)], 1000)
+    )
+
+    assert not upload.exists()
+    assert result.skipped_count == 0
+    if name == "report.docx":
+        assert result.failed_count == 1
+        assert "Alpha" not in result.prompt_content
+        return
+
+    assert result.processed_count == 1
+    assert result.failed_count == 0
+    content = result.prompt_content
+    assert (
+        content.index("## Tabellenblatt Zürich 2025\n")
+        < content.index("| Region | Total |\n| - | - |\n| Alpha | 117 |")
+        < content.index("## Tabellenblatt Zürich 2026\n")
+        < content.index("| Region | Total |\n| - | - |\n| Beta | 839 |")
+    )
+    assert "Empty tab" not in content
+    assert "Hidden tab" not in content
+    assert "Hidden data" not in content
+
+
+@pytest.mark.parametrize("extension", [".html", ".htm"])
+def test_process_attachments_extracts_html_from_extensionless_upload(
+    tmp_path, monkeypatch, chat, extension: str
+) -> None:
+    upload = tmp_path / "generated-upload-id"
+    upload.write_text("<p>HTML attachment text</p>", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path)
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(upload), name=f"page{extension}")], 1000
+        )
+    )
+
+    assert result.processed_count == 1
+    assert "HTML attachment text" in result.prompt_content
+    assert not upload.exists()
+
+
 def test_attachment_budget_is_cumulative_and_skipped_file_does_not_consume_it(
     tmp_path, monkeypatch, chat
 ) -> None:
@@ -902,7 +968,7 @@ def test_accepted_chainlit_extensions_all_route_to_supported_handlers() -> None:
     import tomllib
     from pathlib import Path
 
-    from docling.datamodel.base_models import FormatToExtensions
+    from ai_chat.documents import DOCLING_FORMATS_BY_EXTENSION
 
     repo_root = Path(__file__).resolve().parents[2]
     chainlit_config = tomllib.loads(
@@ -910,13 +976,11 @@ def test_accepted_chainlit_extensions_all_route_to_supported_handlers() -> None:
     )
     accept = chainlit_config["features"]["spontaneous_file_upload"]["accept"]
     accepted = {ext.lower() for extensions in accept.values() for ext in extensions}
-    docling_exts = {
-        f".{ext.lower()}"
-        for extensions in FormatToExtensions.values()
-        for ext in extensions
-    }
-    supported = app.FILE_FORMAT_WHITELIST | {".pdf"} | docling_exts
-    assert accepted <= supported
+    supported = (
+        app.FILE_FORMAT_WHITELIST | {".pdf"} | DOCLING_FORMATS_BY_EXTENSION.keys()
+    )
+    assert accepted == app.ALLOWED_UPLOAD_EXTENSIONS
+    assert app.ALLOWED_UPLOAD_EXTENSIONS <= supported
     assert {".md", ".markdown", ".mdown", ".mkd"} <= app.FILE_FORMAT_WHITELIST
 
 

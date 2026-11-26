@@ -5,6 +5,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
@@ -339,7 +340,7 @@ async def process_attachments(
                         raise RuntimeError("PyMuPDF returned empty content")
                 else:
                     result = await run_document_conversion(
-                        extract_with_docling,
+                        partial(extract_with_docling, expected_extension=suffix),
                         file_path,
                         max_output_bytes=max_extracted_text_bytes,
                     )

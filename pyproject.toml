@@ -36,6 +36,10 @@ explicit = true
 torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 
+[tool.ruff.format]
+# Preserve the line breaks in the Chainlit welcome message.
+exclude = ["chainlit.md"]
+
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B", "I", "UP", "ASYNC", "BLE", "TRY"]
 ignore = ["TRY003", "TRY301"]
