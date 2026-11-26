@@ -42,6 +42,15 @@ def make_config() -> dict:
             "upload_dir": ".files",
             "reasoning_effort_when_thinking_disabled": "none",
             "max_concurrent_document_conversions": 2,
+            "document_conversion_timeout_seconds": 120,
+            "document_conversion_kill_grace_seconds": 5,
+        },
+        "uploads": {
+            "allowed_extensions": [".txt", ".pdf", ".docx"],
+            "max_file_bytes": 20_971_520,
+            "max_extracted_text_bytes": 2_097_152,
+            "max_files_per_chat": 30,
+            "max_aggregate_upload_bytes_per_chat": 52_428_800,
         },
         "logging": {"log_file": "test.log", "log_level": "INFO"},
         "usage_stats": {
@@ -448,3 +457,113 @@ def test_load_model_config_does_not_require_api_key(config_file, monkeypatch) ->
 
     assert loaded["default_selection"] == "local-model"
     assert default_model_context_length({"model": loaded}) == 4096
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "file:///etc/passwd",
+        "localhost:11434/v1",
+        "http://",
+        "http://:11434/v1",
+        "ftp://example.test/v1",
+    ],
+)
+def test_validate_config_rejects_non_http_base_url(base_url: str) -> None:
+    config = make_config()
+    config["openai"]["base_url"] = base_url
+
+    with pytest.raises(ConfigError, match=r"openai\.base_url.*http://"):
+        validate_config(config)
+
+
+def test_parse_log_level_rejects_boolean() -> None:
+    with pytest.raises(ConfigError, match="log_level"):
+        parse_log_level(True)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("max_concurrent_document_conversions", 0),
+        ("max_concurrent_document_conversions", True),
+        ("document_conversion_timeout_seconds", 0),
+        ("document_conversion_timeout_seconds", float("inf")),
+        ("document_conversion_timeout_seconds", True),
+        ("document_conversion_kill_grace_seconds", -1),
+        ("document_conversion_kill_grace_seconds", float("nan")),
+    ],
+)
+def test_validate_config_rejects_invalid_conversion_runtime_settings(
+    key: str, value: object
+) -> None:
+    config = make_config()
+    config["runtime"][key] = value
+
+    with pytest.raises(ConfigError, match=rf"runtime\.{key}"):
+        validate_config(config)
+
+
+def test_validate_config_requires_uploads_section() -> None:
+    config = make_config()
+    del config["uploads"]
+
+    with pytest.raises(ConfigError, match="uploads"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("allowed_extensions", []),
+        ("allowed_extensions", ["pdf"]),
+        ("max_file_bytes", 0),
+        ("max_file_bytes", True),
+        ("max_extracted_text_bytes", -5),
+        ("max_files_per_chat", 0),
+        ("max_aggregate_upload_bytes_per_chat", 0),
+    ],
+)
+def test_validate_config_rejects_invalid_upload_limits(key: str, value: object) -> None:
+    config = make_config()
+    config["uploads"][key] = value
+
+    with pytest.raises(ConfigError, match=rf"uploads\.{key}"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_plain_text_extension_outside_allowed_uploads() -> None:
+    config = make_config()
+    config["file_format_whitelist"] = [".txt", ".json"]
+
+    with pytest.raises(ConfigError, match="file_format_whitelist"):
+        validate_config(config)
+
+
+def test_chainlit_config_hardening_and_upload_limits_match_app_config() -> None:
+    import tomllib
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    chainlit_config = tomllib.loads(
+        (repo_root / ".chainlit" / "config.toml").read_text(encoding="utf-8")
+    )
+    app_config = yaml.safe_load((repo_root / "config.yaml").read_text(encoding="utf-8"))
+
+    assert chainlit_config["project"]["session_timeout"] >= 3600
+    assert chainlit_config["features"]["edit_message"] is False
+    assert chainlit_config["features"]["mcp"] == {"enabled": False}
+
+    upload_ui = chainlit_config["features"]["spontaneous_file_upload"]
+    assert (
+        upload_ui["max_size_mb"] * 1024 * 1024
+        == app_config["uploads"]["max_file_bytes"]
+    )
+    accepted = {
+        ext.lower() for extensions in upload_ui["accept"].values() for ext in extensions
+    }
+    allowed = {ext.lower() for ext in app_config["uploads"]["allowed_extensions"]}
+    assert accepted == allowed
+    assert app_config["openai"]["max_retries"] == 0

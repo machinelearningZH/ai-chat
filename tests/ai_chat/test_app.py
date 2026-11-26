@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
@@ -8,6 +9,8 @@ import pytest
 from ai_chat import app
 from ai_chat.app import (
     MESSAGES,
+    ChatUploadUsage,
+    ConversationHistory,
     build_context_window,
     calculate_input_token_limit,
     normalize_attachment_name,
@@ -244,8 +247,7 @@ def test_on_message_stops_before_llm_when_current_message_is_too_large(
     session = chat.session
     session.values.update(
         {
-            "past_content": [{"role": "system", "content": "system"}],
-            "past_content_token_counts": [1],
+            "conversation_history": ConversationHistory.initial("system", 1),
             "max_tokens": 0,
         }
     )
@@ -255,7 +257,9 @@ def test_on_message_stops_before_llm_when_current_message_is_too_large(
     assert [message.content for message in chat.messages] == [MESSAGE_TOO_LARGE]
     chat.create.assert_not_called()
     assert chat.messages[0].sent == [MESSAGE_TOO_LARGE]
-    assert session.values["past_content"] == [{"role": "system", "content": "system"}]
+    assert session.values["conversation_history"].messages == [
+        {"role": "system", "content": "system"}
+    ]
     counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["message_tokens"] > 0
@@ -323,8 +327,7 @@ def test_on_message_streams_and_commits_complete_turn(
     )
     chat.session.values.update(
         {
-            "past_content": [{"role": "system", "content": "system"}],
-            "past_content_token_counts": [1],
+            "conversation_history": ConversationHistory.initial("system", 1),
             "max_tokens": 100,
             "selected_model": app.DEFAULT_MODEL,
             "max_tokens_output": 17,
@@ -359,13 +362,13 @@ def test_on_message_streams_and_commits_complete_turn(
     assert chat.messages[0].sent == [""]
     assert chat.messages[0].tokens == ["Hello", " world"]
     assert chat.messages[0].updated == ["Hello world"]
-    assert chat.session.values["past_content"] == [
+    assert chat.session.values["conversation_history"].messages == [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello world"},
     ]
     # Known cl100k_base examples, independent of the app's token-count helper.
-    assert chat.session.values["past_content_token_counts"] == [1, 1, 2]
+    assert chat.session.values["conversation_history"].token_counts == [1, 1, 2]
     counters = only_day_counters(app_stats)
     assert counters["message_tokens"] == 1
     assert counters["response_tokens"] == 2
@@ -378,9 +381,11 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
 ) -> None:
     from openai import OpenAIError
 
-    history = [{"role": "system", "content": "system"}]
     chat.session.values.update(
-        {"past_content": history, "past_content_token_counts": [1], "max_tokens": 100}
+        {
+            "conversation_history": ConversationHistory.initial("system", 1),
+            "max_tokens": 100,
+        }
     )
 
     async def broken_stream():
@@ -395,11 +400,15 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
         chat.create.return_value = broken_stream()
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
     chat.create.assert_awaited_once()
-    assert chat.messages[0].updated == [LLM_ERROR]
-    assert chat.session.values["past_content"] == [
+    if failure_stage == "create":
+        assert chat.messages[0].sent == [LLM_ERROR]
+        assert chat.messages[0].updated == []
+    else:
+        assert chat.messages[0].updated == [LLM_ERROR]
+    assert chat.session.values["conversation_history"].messages == [
         {"role": "system", "content": "system"}
     ]
-    assert chat.session.values["past_content_token_counts"] == [1]
+    assert chat.session.values["conversation_history"].token_counts == [1]
     counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["llm_errors"] == 1
@@ -408,7 +417,9 @@ def test_on_message_model_failure_preserves_history_and_can_recover(
     chat.create.side_effect = None
     chat.create.return_value = response_chunks("Hello")
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
-    assert [item["content"] for item in chat.session.values["past_content"]] == [
+    assert [
+        item["content"] for item in chat.session.values["conversation_history"].messages
+    ] == [
         "system",
         "Hi",
         "Hello",
@@ -645,12 +656,14 @@ def test_on_message_counts_and_times_successful_responses(
 def test_on_message_counts_trimmed_history(chat, app_stats) -> None:
     chat.session.values.update(
         {
-            "past_content": [
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "old question"},
-                {"role": "assistant", "content": "old answer"},
-            ],
-            "past_content_token_counts": [1, 50, 50],
+            "conversation_history": ConversationHistory(
+                messages=[
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+                token_counts=[1, 50, 50],
+            ),
             "max_tokens": 60,
         }
     )
@@ -670,7 +683,8 @@ def test_on_message_counts_an_unexpected_model_error(chat, app_stats) -> None:
 
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    assert chat.messages[0].updated == [LLM_ERROR]
+    assert chat.messages[0].sent == [LLM_ERROR]
+    assert chat.messages[0].updated == []
     counters = only_day_counters(app_stats)
     assert counters["messages"] == 1
     assert counters["llm_errors"] == 1
@@ -709,11 +723,12 @@ def shown_when_counted(monkeypatch, chat, app_stats, metric: str) -> list[dict]:
 
     def note(usage) -> None:
         if metric in usage:
-            history = chat.session.values.get("past_content", [])
+            history = chat.session.values.get("conversation_history")
+            messages = history.messages if history is not None else []
             snapshots.append(
                 {
                     "messages": [m.sent + m.updated for m in chat.messages],
-                    "history": [item["content"] for item in history],
+                    "history": [item["content"] for item in messages],
                 }
             )
 
@@ -740,7 +755,7 @@ def test_on_message_shows_a_model_error_before_counting_it(
 
     asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
 
-    assert [snapshot["messages"] for snapshot in shown] == [[["", LLM_ERROR]]]
+    assert [snapshot["messages"] for snapshot in shown] == [[[LLM_ERROR]]]
 
 
 def test_on_message_commits_an_answer_before_counting_it(
@@ -821,6 +836,9 @@ def test_on_chat_start_resets_usage_session_counters(chat, monkeypatch) -> None:
 
     assert chat.session.values["chat_messages"] == 0
     assert chat.session.values["counted_chat_metrics"] == set()
+    assert isinstance(chat.session.values["conversation_history"], ConversationHistory)
+    assert chat.session.values["upload_usage"] == ChatUploadUsage()
+    assert "past_content" not in chat.session.values
 
 
 def test_on_message_counts_file_types_for_failed_and_skipped_documents(
@@ -911,7 +929,7 @@ def test_process_attachments_cleans_up_remaining_files_when_cancelled(
     second.write_bytes(b"%PDF-1.4")
     monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
 
-    async def cancel_first(_extractor, _path):
+    async def cancel_first(_extractor, _path, **_kwargs):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(app, "run_document_conversion", cancel_first)
@@ -970,8 +988,9 @@ def test_process_attachments_budgets_error_templates_so_message_fits(
     tight_budget = app.count_tokens("system") + app.count_tokens(empty_prompt) + 2
     chat.session.values.update(
         {
-            "past_content": [{"role": "system", "content": "system"}],
-            "past_content_token_counts": [app.count_tokens("system")],
+            "conversation_history": ConversationHistory.initial(
+                "system", app.count_tokens("system")
+            ),
             "max_tokens": tight_budget,
         }
     )
@@ -999,8 +1018,7 @@ def test_on_message_serializes_overlapping_turns_without_losing_history(
 ) -> None:
     chat.session.values.update(
         {
-            "past_content": [{"role": "system", "content": "system"}],
-            "past_content_token_counts": [1],
+            "conversation_history": ConversationHistory.initial("system", 1),
             "max_tokens": 100,
         }
     )
@@ -1036,7 +1054,9 @@ def test_on_message_serializes_overlapping_turns_without_losing_history(
 
     asyncio.run(run_overlapping())
 
-    assert [item["content"] for item in chat.session.values["past_content"]] == [
+    assert [
+        item["content"] for item in chat.session.values["conversation_history"].messages
+    ] == [
         "system",
         "first",
         "reply-1",
@@ -1045,21 +1065,28 @@ def test_on_message_serializes_overlapping_turns_without_losing_history(
     ]
 
 
-def test_document_conversions_use_bounded_dedicated_thread_pool(
+def test_document_conversions_respect_concurrency_limit(
     tmp_path, monkeypatch, chat
 ) -> None:
     import time
 
-    seen_threads: set[int] = set()
+    active = 0
+    peak_active = 0
     lock = threading.Lock()
 
-    def fake_extract(_path):
+    def fake_run_in_process(_extractor, _path, **_kwargs) -> str:
+        nonlocal active, peak_active
         with lock:
-            seen_threads.add(threading.get_ident())
-        time.sleep(0.02)
-        return "extracted"
+            active += 1
+            peak_active = max(peak_active, active)
+        try:
+            time.sleep(0.03)
+            return "extracted"
+        finally:
+            with lock:
+                active -= 1
 
-    monkeypatch.setattr(app, "extract_with_docling", fake_extract)
+    monkeypatch.setattr(app, "run_conversion_in_process", fake_run_in_process)
     monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
 
     files = []
@@ -1068,14 +1095,268 @@ def test_document_conversions_use_bounded_dedicated_thread_pool(
         path.write_text("dummy", encoding="utf-8")
         files.append(SimpleNamespace(path=str(path), name=path.name))
 
-    async def run_with_pool_noise() -> None:
-        noise = [asyncio.to_thread(time.sleep, 0.05) for _ in range(8)]
+    async def run_concurrent_conversions() -> None:
         conversions = [
             app.process_attachments([element], max_tokens=1000) for element in files
         ]
-        await asyncio.gather(*noise, *conversions)
+        await asyncio.gather(*conversions)
 
-    asyncio.run(run_with_pool_noise())
+    asyncio.run(run_concurrent_conversions())
 
     limit = app.runtime_config["max_concurrent_document_conversions"]
-    assert 1 <= len(seen_threads) <= limit
+    assert 1 <= peak_active <= limit
+
+
+def test_process_attachments_dispatches_by_uploaded_filename_not_temp_path(
+    tmp_path, monkeypatch, chat
+) -> None:
+    upload = tmp_path / "abc123.bin"
+    upload.write_text("# Heading\nBody", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setattr(
+        app,
+        "run_document_conversion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Plain-text markdown should not invoke Docling")
+        ),
+    )
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(upload), name="notes.md")],
+            max_tokens=1_000,
+        )
+    )
+
+    assert result.processed_count == 1
+    assert result.failed_count == 0
+    assert result.skipped_count == 0
+    assert result.file_types == [".md"]
+    assert "# Heading\nBody" in result.prompt_content
+    assert not upload.exists()
+
+
+def test_process_attachments_rejects_disallowed_extension_without_consuming_quota(
+    tmp_path, monkeypatch, chat
+) -> None:
+    upload = tmp_path / "program.exe"
+    upload.write_bytes(b"MZ")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(upload), name="program.exe")],
+            max_tokens=1_000,
+        )
+    )
+
+    assert result.processed_count == 0
+    assert result.skipped_count == 1
+    assert result.uploaded_file_count == 0
+    assert result.uploaded_bytes == 0
+    assert not upload.exists()
+
+
+def test_process_attachments_rejected_oversized_file_preserves_remaining_chat_budget(
+    tmp_path, monkeypatch, chat
+) -> None:
+    from ai_chat.context import ChatUploadUsage
+
+    too_big = tmp_path / "big.txt"
+    too_big.write_text("123456", encoding="utf-8")
+    small = tmp_path / "small.txt"
+    small.write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    max_total = app.uploads_config["max_aggregate_upload_bytes_per_chat"]
+
+    result = asyncio.run(
+        app.process_attachments(
+            [
+                SimpleNamespace(path=str(too_big), name="big.txt"),
+                SimpleNamespace(path=str(small), name="small.txt"),
+            ],
+            max_tokens=1_000,
+            chat_usage=ChatUploadUsage(uploaded_bytes=max_total - 3),
+        )
+    )
+
+    assert result.skipped_count == 1
+    assert result.processed_count == 1
+    assert result.uploaded_file_count == 1
+    assert result.uploaded_bytes == len("ok")
+    assert "ok" in result.prompt_content
+    assert not too_big.exists()
+    assert not small.exists()
+
+
+def test_process_attachments_enforces_per_file_and_extracted_text_byte_limits(
+    tmp_path, monkeypatch, chat
+) -> None:
+    oversized = tmp_path / "oversized.txt"
+    oversized.write_text("0123456789", encoding="utf-8")
+    extracted_too_large = tmp_path / "dense.txt"
+    extracted_too_large.write_text("abcdef", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setitem(app.uploads_config, "max_file_bytes", 8)
+    monkeypatch.setitem(app.uploads_config, "max_extracted_text_bytes", 4)
+
+    result = asyncio.run(
+        app.process_attachments(
+            [
+                SimpleNamespace(path=str(oversized), name="oversized.txt"),
+                SimpleNamespace(path=str(extracted_too_large), name="dense.txt"),
+            ],
+            max_tokens=1_000,
+        )
+    )
+
+    assert result.processed_count == 0
+    assert result.failed_count == 0
+    assert result.skipped_count == 2
+    assert result.uploaded_file_count == 1
+    assert any(
+        DOCUMENT_LIMIT_WARNING.format(element_name="dense.txt") in m.sent
+        for m in chat.messages
+    )
+    assert not oversized.exists()
+    assert not extracted_too_large.exists()
+
+
+def test_process_attachments_enforces_chat_file_slot_limit(
+    tmp_path, monkeypatch, chat
+) -> None:
+    from ai_chat.context import ChatUploadUsage
+
+    upload = tmp_path / "extra.txt"
+    upload.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+
+    result = asyncio.run(
+        app.process_attachments(
+            [SimpleNamespace(path=str(upload), name="extra.txt")],
+            max_tokens=1_000,
+            chat_usage=ChatUploadUsage(files=app.uploads_config["max_files_per_chat"]),
+        )
+    )
+
+    assert result.processed_count == 0
+    assert result.skipped_count == 1
+    assert result.uploaded_file_count == 0
+    assert not upload.exists()
+
+
+def test_on_message_starts_stream_timer_on_first_non_whitespace_token(
+    monkeypatch, chat, app_stats
+) -> None:
+    clock = {"now": 10.0}
+    monkeypatch.setattr(app.time, "perf_counter", lambda: clock["now"])
+
+    async def timed_chunks():
+        clock["now"] = 10.2
+        async for chunk in response_chunks("\n\n"):
+            yield chunk
+        clock["now"] = 10.7
+        async for chunk in response_chunks("Hello"):
+            yield chunk
+        clock["now"] = 11.0
+        async for chunk in response_chunks(" world"):
+            yield chunk
+
+    chat.create.side_effect = None
+    chat.create.return_value = timed_chunks()
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    counters = only_day_counters(app_stats)
+    assert counters["response_ms"] == 1000
+    assert counters["response_stream_ms"] == 300
+
+
+def test_on_message_omits_blank_bubble_and_keeps_history_clean_on_early_cancel(
+    chat, app_stats
+) -> None:
+    history = ConversationHistory.initial("system", system_prompt_tokens=1)
+    chat.session.values["conversation_history"] = history
+
+    async def cancelled_before_token():
+        if False:
+            yield None
+        raise asyncio.CancelledError
+
+    chat.create.side_effect = None
+    chat.create.return_value = cancelled_before_token()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    assert [m.sent for m in chat.messages if m.sent] == []
+    assert chat.session.values["conversation_history"].messages == [
+        {"role": "system", "content": "system"}
+    ]
+    counters = only_day_counters(app_stats)
+    assert counters["messages"] == 1
+    assert "responses" not in counters
+    assert "llm_errors" not in counters
+
+
+def test_on_message_handles_mid_stream_json_error_and_leaves_history_clean(
+    chat, app_stats
+) -> None:
+    history = ConversationHistory.initial("system", system_prompt_tokens=1)
+    chat.session.values["conversation_history"] = history
+
+    async def broken_json_stream():
+        async for chunk in response_chunks("partial"):
+            yield chunk
+        raise json.JSONDecodeError("truncated", "{", 1)
+
+    chat.create.side_effect = None
+    chat.create.return_value = broken_json_stream()
+
+    asyncio.run(app.on_message(SimpleNamespace(content="Hi", elements=[])))
+
+    assert chat.messages[0].updated == [LLM_ERROR]
+    assert chat.session.values["conversation_history"].messages == [
+        {"role": "system", "content": "system"}
+    ]
+    counters = only_day_counters(app_stats)
+    assert counters["messages"] == 1
+    assert counters["llm_errors"] == 1
+    assert "responses" not in counters
+
+
+def test_on_message_persists_chat_upload_usage_across_turns(
+    tmp_path, monkeypatch, chat, app_stats
+) -> None:
+    first = tmp_path / "first.txt"
+    first.write_text("1234", encoding="utf-8")
+    second = tmp_path / "second.txt"
+    second.write_text("5678", encoding="utf-8")
+    monkeypatch.setattr(app, "_UPLOAD_DIR", tmp_path.resolve())
+    monkeypatch.setitem(app.uploads_config, "max_aggregate_upload_bytes_per_chat", 6)
+    chat.create.side_effect = None
+    chat.create.side_effect = lambda **_kwargs: response_chunks("OK")
+
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="first",
+                elements=[SimpleNamespace(path=str(first), name="first.txt")],
+            )
+        )
+    )
+    asyncio.run(
+        app.on_message(
+            SimpleNamespace(
+                content="second",
+                elements=[SimpleNamespace(path=str(second), name="second.txt")],
+            )
+        )
+    )
+
+    assert chat.session.values["upload_usage"] == ChatUploadUsage(
+        files=1, uploaded_bytes=4
+    )
+    counters = only_day_counters(app_stats)
+    assert counters["documents_processed"] == 1
+    assert counters["documents_skipped"] == 1

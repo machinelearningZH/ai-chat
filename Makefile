@@ -55,22 +55,40 @@ setup: ## Install the Python environment.
 	uv sync
 
 update-packages: ## Upgrade dependencies, verify checks, and push the lockfile from a feature branch.
-	@branch=$$(git symbolic-ref --quiet --short HEAD) && [ "$$branch" != main ] || { \
+	@branch=$$(git symbolic-ref --quiet HEAD) && [ "$$branch" != refs/heads/main ] || { \
 		echo 'Run update-packages on a branch other than main.' >&2; exit 1; \
 	}
 	@changes=$$(git status --porcelain --untracked-files=no) && [ -z "$$changes" ] || { \
 		echo 'Commit or stash tracked changes before running update-packages.' >&2; exit 1; \
 	}
+	@base=$$(git rev-parse --verify HEAD); \
+	branch=$$(git symbolic-ref --quiet HEAD); \
+	tab=$$(printf '\t'); \
+	remote_rc=0; \
+	remote_head=$$(git ls-remote --exit-code origin "$$branch") || remote_rc=$$?; \
+	if [ "$$remote_rc" -eq 0 ]; then \
+		[ "$$remote_head" = "$$base$${tab}$$branch" ] || { \
+			echo 'The current branch must match origin before updating dependencies.' >&2; exit 1; \
+		}; \
+	elif [ "$$remote_rc" -eq 2 ]; then \
+		origin_main=$$(git ls-remote --exit-code origin refs/heads/main) || { \
+			echo 'Could not verify origin/main before updating dependencies.' >&2; exit 1; \
+		}; \
+		[ "$$origin_main" = "$$base$${tab}refs/heads/main" ] || { \
+			echo 'A new topic branch must start from origin/main before updating dependencies.' >&2; exit 1; \
+		}; \
+	else \
+		echo 'Could not query origin before updating dependencies.' >&2; exit 1; \
+	fi
 	uv lock --upgrade
 	uv sync
-	uv run ruff format --check .
-	uv run ruff check .
-	PYTHONWARNINGS=error uv run pytest
-	@if git diff --quiet HEAD -- uv.lock; then \
-		echo 'Dependencies are up to date.'; \
-	else \
-		git commit -m 'chore: update packages' -- uv.lock && git push origin HEAD; \
-	fi
+	$(MAKE) check
+	@status=$$(git status --porcelain --untracked-files=no); \
+	case "$$status" in \
+		'') echo 'Dependencies are up to date.' ;; \
+		' M uv.lock') git commit --only -m 'chore: update packages' -- uv.lock && git push origin HEAD ;; \
+		*) echo 'Expected only an unstaged uv.lock change after the checks.' >&2; exit 1 ;; \
+	esac
 
 test: ## Run the test suite.
 	uv run pytest

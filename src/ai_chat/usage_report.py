@@ -507,7 +507,17 @@ def format_report(
     periods = fill_periods(counters, by)
     overall = sum_counters(periods.values())
     first, last = min(periods), max(periods)
-    title = f"Usage   {first} – {last} · {plural(len(periods), by)} · {timezone}"
+    partial_first = (
+        by == "month"
+        and bool(since)
+        and since[: PERIOD_LENGTHS["month"]] == first
+        and not since.endswith("-01")
+    )
+    title_parts = [f"{first} – {last}", plural(len(periods), by)]
+    if partial_first:
+        title_parts.append(f"from {since}")
+    title_parts.append(timezone)
+    title = f"Usage   {' · '.join(title_parts)}"
     if detailed:
         by_hour = {f"{hour:02}": hours.get(hour, 0) for hour in range(24)}
         blocks = [
@@ -571,7 +581,7 @@ def main(arguments: list[str] | None = None) -> None:
             aggregate_periods(days, options.by),
             hours,
             messages_by_weekday(days),
-            timezone=stats.timezone.key,
+            timezone=stats.timezone.key or "UTC",
             by=options.by,
             current_period=stats.today().isoformat()[: PERIOD_LENGTHS[options.by]],
             detailed=options.detailed,

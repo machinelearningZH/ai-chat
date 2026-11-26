@@ -487,3 +487,42 @@ def test_format_breakdown_shows_code_types_and_skipped_label() -> None:
     assert "  too large" not in breakdown
     assert "Code" in breakdown
     assert "100%" in next(line for line in breakdown.splitlines() if "Code" in line)
+
+
+def test_format_report_marks_partial_first_month_when_since_is_mid_month() -> None:
+    overview = report(since="2026-10-20")
+
+    assert overview.splitlines()[0] == (
+        "Usage   2026-10 – 2026-11 · 2 months · from 2026-10-20 · UTC"
+    )
+
+
+def test_format_report_omits_from_marker_when_since_is_first_of_month() -> None:
+    overview = report(since="2026-10-01")
+
+    assert overview.splitlines()[0] == "Usage   2026-10 – 2026-11 · 2 months · UTC"
+
+
+def test_format_report_omits_from_marker_for_daily_reports() -> None:
+    daily = report(
+        {"2026-10-20": {"chats": 1, "messages": 1}},
+        by="day",
+        current_period="2026-10-20",
+        since="2026-10-20",
+    )
+
+    assert daily.splitlines()[0] == "Usage   2026-10-20 – 2026-10-20 · 1 day · UTC"
+
+
+def test_main_falls_back_to_utc_when_timezone_key_is_none(
+    seeded_stats, monkeypatch, capsys
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(seeded_stats, "timezone", SimpleNamespace(key=None))
+    monkeypatch.setattr(usage_report, "load_usage_stats", lambda: seeded_stats)
+    monkeypatch.setattr(seeded_stats, "today", lambda: usage_report.date(2026, 11, 5))
+
+    usage_report.main([])
+
+    assert capsys.readouterr().out.splitlines()[0].endswith(" · UTC")

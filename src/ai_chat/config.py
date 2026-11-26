@@ -110,11 +110,27 @@ def _require_non_empty_str(mapping: dict, key: str, label: str | None = None) ->
     return value
 
 
-def _require_positive_int(config: dict, key: str) -> int:
+def _require_positive_int(config: dict, key: str, label: str | None = None) -> int:
     value = config.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ConfigError(f"{key} must be a positive integer")
+        raise ConfigError(f"{label or key} must be a positive integer")
     return value
+
+
+def _require_extensions(mapping: dict, key: str, label: str | None = None) -> list[str]:
+    target = label or key
+    extensions = mapping.get(key)
+    if not isinstance(extensions, list) or not extensions:
+        raise ConfigError(f"{target} must be a non-empty list")
+    if any(
+        not isinstance(extension, str)
+        or not extension.startswith(".")
+        or len(extension) < 2
+        or extension != extension.strip()
+        for extension in extensions
+    ):
+        raise ConfigError(f"{target} entries must be file extensions")
+    return extensions
 
 
 def _require_finite_number(
@@ -189,8 +205,16 @@ def validate_model_config(config: dict) -> dict:
         if name in model_names:
             raise ConfigError(f"Duplicate model name: {name}")
         model_names.add(name)
-        _require_positive_int(model_config, "max_tokens_context")
-        _require_positive_int(model_config, "max_tokens_output")
+        _require_positive_int(
+            model_config,
+            "max_tokens_context",
+            f"model.models[{index}].max_tokens_context",
+        )
+        _require_positive_int(
+            model_config,
+            "max_tokens_output",
+            f"model.models[{index}].max_tokens_output",
+        )
         _require_finite_number(
             model_config, "temperature", f"model {name} temperature", allow_zero=True
         )
@@ -245,7 +269,10 @@ def validate_config(config: dict) -> None:
             )
 
     openai_config = _require_mapping(config, "openai")
-    _require_non_empty_str(openai_config, "base_url", "openai.base_url")
+    base_url = _require_non_empty_str(openai_config, "base_url", "openai.base_url")
+    parsed_base_url = urlparse(base_url)
+    if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.hostname:
+        raise ConfigError("openai.base_url must use http:// or https://")
     _require_finite_number(
         openai_config, "request_timeout_seconds", "openai.request_timeout_seconds"
     )
@@ -267,7 +294,16 @@ def validate_config(config: dict) -> None:
     runtime = _require_mapping(config, "runtime")
     for key in ("tiktoken_cache_dir", "token_encoding", "upload_dir"):
         _require_non_empty_str(runtime, key, f"runtime.{key}")
-    _require_positive_int(runtime, "max_concurrent_document_conversions")
+    _require_positive_int(
+        runtime,
+        "max_concurrent_document_conversions",
+        "runtime.max_concurrent_document_conversions",
+    )
+    for key in (
+        "document_conversion_timeout_seconds",
+        "document_conversion_kill_grace_seconds",
+    ):
+        _require_finite_number(runtime, key, f"runtime.{key}")
     reasoning_effort = runtime.get("reasoning_effort_when_thinking_disabled")
     if reasoning_effort is not None and (
         not isinstance(reasoning_effort, str) or not reasoning_effort.strip()
@@ -276,6 +312,21 @@ def validate_config(config: dict) -> None:
             "runtime.reasoning_effort_when_thinking_disabled must be a non-empty "
             "string or null"
         )
+
+    uploads = _require_mapping(config, "uploads")
+    allowed_extensions = {
+        extension.lower()
+        for extension in _require_extensions(
+            uploads, "allowed_extensions", "uploads.allowed_extensions"
+        )
+    }
+    for key in (
+        "max_file_bytes",
+        "max_extracted_text_bytes",
+        "max_files_per_chat",
+        "max_aggregate_upload_bytes_per_chat",
+    ):
+        _require_positive_int(uploads, key, f"uploads.{key}")
 
     chat = _require_mapping(config, "chat")
     _require_non_empty_str(chat, "app_name", "chat.app_name")
@@ -300,14 +351,11 @@ def validate_config(config: dict) -> None:
                 f"messages.{key} has unexpected template fields: {unexpected}"
             )
 
-    whitelist = config.get("file_format_whitelist")
-    if not isinstance(whitelist, list) or not whitelist:
-        raise ConfigError("file_format_whitelist must be a non-empty list")
-    if any(
-        not isinstance(extension, str) or not extension.startswith(".")
-        for extension in whitelist
-    ):
-        raise ConfigError("file_format_whitelist entries must be file extensions")
+    whitelist = _require_extensions(config, "file_format_whitelist")
+    if not {extension.lower() for extension in whitelist} <= allowed_extensions:
+        raise ConfigError(
+            "file_format_whitelist entries must be included in uploads.allowed_extensions"
+        )
 
 
 def _read_raw_config() -> dict:

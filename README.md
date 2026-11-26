@@ -45,9 +45,11 @@ a model and toggle Thinking Mode. [Upload guide](chainlit.md)
   in the environment or the repository's ignored `.env` file. The default
   dummy key applies to loopback addresses. Non-loopback URLs require a key
   value.
-- Set upload limits, allowed types, and the Chainlit interface language in
-  `.chainlit/config.toml`. Add the browser origin to `allow_origins` if you
-  change the app host or port. [Chainlit settings](.chainlit/config.toml)
+- Set server-side upload and conversion limits under `uploads` and `runtime` in
+  `config.yaml`, and keep them aligned with the Chainlit upload limits, allowed
+  types, and interface language in `.chainlit/config.toml`. Add the browser
+  origin to `allow_origins` if you change the app host or port.
+  [Chainlit settings](.chainlit/config.toml)
 
 Start the app with `uv run chainlit run src/app.py` to use the configured
 server URL. The app sends chat text and extracted document text to that server.

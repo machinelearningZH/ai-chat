@@ -13,7 +13,7 @@ openai:
   api_key_env: "AI_CHAT_API_KEY"
   local_api_key: "ollama" # Non-secret dummy value for local Ollama only.
   request_timeout_seconds: 600
-  max_retries: 2
+  max_retries: 0 # Keep at 0 for local servers so slow or OOM requests do not stall across retries.
 
 # Runtime Configuration
 runtime:
@@ -22,6 +22,31 @@ runtime:
   upload_dir: ".files"
   reasoning_effort_when_thinking_disabled: "none"
   max_concurrent_document_conversions: 2
+  document_conversion_timeout_seconds: 120
+  document_conversion_kill_grace_seconds: 5
+
+# Server-side upload limits. Keep aligned with .chainlit/config.toml.
+uploads:
+  allowed_extensions:
+    - ".pdf"
+    - ".docx"
+    - ".pptx"
+    - ".xlsx"
+    - ".csv"
+    - ".txt"
+    - ".md"
+    - ".markdown"
+    - ".mdown"
+    - ".mkd"
+    - ".html"
+    - ".htm"
+    - ".py"
+    - ".r"
+    - ".rmd"
+  max_file_bytes: 20971520 # 20 MiB per file (matches .chainlit/config.toml)
+  max_extracted_text_bytes: 2097152 # 2 MiB extracted UTF-8 text per file
+  max_files_per_chat: 30
+  max_aggregate_upload_bytes_per_chat: 52428800 # 50 MiB per chat
 
 # Chat Configuration
 chat:

@@ -234,3 +234,28 @@ def test_read_snapshot_reads_wal_db_from_readonly_directory(seeded_stats) -> Non
 
     assert days == {"2026-10-20": {"messages": 2}, "2026-11-05": {"messages": 4}}
     assert hours == {9: 2, 14: 4}
+
+
+def test_record_concurrent_initial_writes_do_not_drop_counts(
+    tmp_path, set_clock
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    stats = UsageStats(tmp_path / "concurrent.sqlite")
+    set_clock(2026, 11, 20, 10, 0)
+
+    def write_one(_: int) -> None:
+        stats.record({"messages": 1})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write_one, range(16)))
+
+    assert stats.read_snapshot() == ({"2026-11-20": {"messages": 16}}, {10: 16})
+
+
+def test_schema_init_uses_immediate_transaction_and_direct_day_query() -> None:
+    from ai_chat import usage_stats
+
+    assert "BEGIN IMMEDIATE;" in usage_stats._CREATE_TABLES
+    assert "COMMIT;" in usage_stats._CREATE_TABLES
+    assert "GROUP BY" not in usage_stats._READ_DAYS

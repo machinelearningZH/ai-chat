@@ -91,7 +91,10 @@ CHAT_LENGTH_METRICS = {
 # A period is the leading part of an ISO day such as 2026-11-18.
 PERIOD_LENGTHS = {"month": 7, "day": 10}
 
+# Create both tables together under an immediate write lock so a first report
+# cannot see half the schema and concurrent writers queue on busy_timeout.
 _CREATE_TABLES = """
+    BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS counters (
         day TEXT NOT NULL,
         metric TEXT NOT NULL,
@@ -104,6 +107,7 @@ _CREATE_TABLES = """
         messages INTEGER NOT NULL,
         PRIMARY KEY (day, hour)
     );
+    COMMIT;
 """
 _ADD = """
     INSERT INTO counters (day, metric, value) VALUES (?, ?, ?)
@@ -113,9 +117,8 @@ _ADD_MESSAGE_HOUR = """
     INSERT INTO message_hours (day, hour, messages) VALUES (?, ?, ?)
     ON CONFLICT (day, hour) DO UPDATE SET messages = messages + excluded.messages
 """
-_READ = """
-    SELECT substr(day, 1, ?) AS period, metric, SUM(value)
-    FROM counters WHERE day >= ? GROUP BY period, metric
+_READ_DAYS = """
+    SELECT day, metric, value FROM counters WHERE day >= ?
 """
 _READ_MESSAGE_HOURS = """
     SELECT hour, SUM(messages) FROM message_hours
@@ -183,9 +186,7 @@ class UsageStats:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
             connection.execute("BEGIN")
             days: dict[str, dict[str, int]] = {}
-            for day, metric, value in connection.execute(
-                _READ, (PERIOD_LENGTHS["day"], since)
-            ):
+            for day, metric, value in connection.execute(_READ_DAYS, (since,)):
                 days.setdefault(day, {})[metric] = value
             hours = dict(connection.execute(_READ_MESSAGE_HOURS, (since,)))
         return days, hours
